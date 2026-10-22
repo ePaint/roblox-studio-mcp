@@ -1,0 +1,20 @@
+# Temporary local files
+temp/
+tmp/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environment variables and secrets
+.env
+*.local
+
+# Operating System files
+.DS_Store
+Thumbs.db
