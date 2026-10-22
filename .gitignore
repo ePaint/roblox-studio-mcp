@@ -1,15 +1,18 @@
-# Temporary local files
+# Local scratchpad
 temp/
 tmp/
 
-# Python
-.venv/
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
+# Go build artifacts
+/dist/
+*.exe
+*.test
+*.out
+coverage.out
+go.work
+go.work.sum
+
+# Generated plugin bundle
+plugin/dist/
 
 # Environment variables and secrets
 .env

@@ -2,13 +2,14 @@
 
 ## 1. Overview and Strategy
 
-The project will be built in **Go (Golang)**. 
+The project is a single static Go binary, `roblox-studio-mcp`, plus a Luau companion plugin. There is no Python, Node or Rojo in the toolchain. The binary is cgo-free, targets Windows x64 first and macOS second.
 
-### Why Go?
-* **Single Binary Distribution**: Compiles to a single, zero-dependency static executable (`roblox-studio-mcp.exe`). Developers and AI users do not need Python, Node.js, or any runtime installed.
-* **Minimal Footprint**: Startup time under 10 milliseconds and baseline memory usage under 15 MB.
-* **Native Concurrency**: Go channels and goroutines natively handle simultaneous `stdio` MCP communication and `net/http` long-polling with Roblox Studio.
-* **Direct Windows Host Integration**: Go interfaces cleanly with Windows APIs (`user32.dll`, `gdi32.dll`) for window management, screen capture, and playtest keyboard shortcuts.
+### Why Go
+* **Single binary distribution**: one zero-dependency executable (`roblox-studio-mcp.exe`). Users need no runtime installed.
+* **Minimal footprint**: startup in milliseconds and a small resident memory baseline.
+* **Native concurrency**: goroutines and channels handle stdio MCP traffic and the HTTP link to Studio at the same time.
+* **Direct Windows host integration**: Go reaches `user32.dll`, `gdi32.dll` and `dwmapi.dll` through `golang.org/x/sys/windows` without cgo.
+* **Cross-compilation from a Mac**: `GOOS=windows` builds and vets on the development machine.
 
 ---
 
@@ -17,127 +18,205 @@ The project will be built in **Go (Golang)**.
 ```
 roblox-studio-mcp/
 ├── cmd/
-│   └── roblox-studio-mcp/
-│       └── main.go                  # Main application entry point
+│   ├── roblox-studio-mcp/
+│   │   └── main.go                  # Entry point: stdio MCP server, install-plugin subcommand
+│   └── buildplugin/
+│       └── main.go                  # Emits plugin/dist/RobloxStudioMcp.rbxmx (text/template)
 ├── internal/
 │   ├── bridge/
-│   │   ├── server.go                # HTTP bridge server on 127.0.0.1:58741
-│   │   ├── session.go               # Active Studio session tracking and token auth
-│   │   └── queue.go                 # Thread-safe job queue and dispatch channels
+│   │   ├── server.go                # HTTP bridge on 127.0.0.1:58741, endpoint handlers
+│   │   ├── pairing.go               # Pairing code, token issue and validation, Host/Origin checks
+│   │   ├── proxy.go                 # Owner detection and loopback /rpc proxy for later binaries
+│   │   ├── session.go               # Per-Studio session registry, roles, most-recent-active default
+│   │   └── queue.go                 # Serial FIFO job queue per session, deadlines, result matching
 │   ├── host/
-│   │   ├── window.go                # Finds RobloxStudio.exe window handle (HWND)
-│   │   ├── capture.go               # Win32 GDI screen capture of Studio viewport
-│   │   └── input.go                 # Injects F5/Shift+F5 and player WASD/mouse inputs
-│   ├── mcp/
-│   │   ├── server.go                # MCP protocol initialization (stdio transport)
-│   │   └── tools.go                 # Tool definitions and argument schema validation
-│   └── types/
-│       ├── roblox.go                # Serialization models (Vector3, CFrame, UDim2)
-│       └── payload.go               # Bridge request/response payloads
+│   │   ├── host.go                  # Host interface
+│   │   ├── host_windows.go          # Win32 backend (user32, gdi32, dwmapi)
+│   │   └── host_other.go            # //go:build !windows, returns UNSUPPORTED_HOST
+│   ├── codec/
+│   │   └── codec.go                 # Tagged type wire format (Vector3, CFrame, Color3, Enum, ...)
+│   └── tools/
+│       └── ...                      # Tool registry, schemas and handlers for the 18 tools
 ├── plugin/
 │   ├── src/
-│   │   ├── init.luau                # Plugin entry point and polling loop
-│   │   ├── deserializer.luau        # JSON to native Roblox type deserialization
+│   │   ├── init.luau                # Entry point, role detection, pairing widget
+│   │   ├── bridge.luau              # HTTP poll loop, result and log posting
+│   │   ├── deserializer.luau        # Tagged JSON to Roblox types and back
 │   │   ├── script_manager.luau      # ScriptEditorService + ChangeHistoryService
-│   │   ├── mock_datastore.luau      # In-memory offline DataStore module
-│   │   └── physics_builder.luau     # General constraint and joint generator
-│   └── RobloxStudioMcp.rbxm         # Built binary plugin distribution
+│   │   ├── mock_datastore.luau      # Mock DataStore module and wrapper
+│   │   ├── physics_builder.luau     # Constraint and joint generator
+│   │   └── playtest.luau            # StudioTestService session control
+│   ├── dist/                        # Build output, gitignored
+│   │   └── RobloxStudioMcp.rbxmx
+│   └── embed.go                     # go:embed of dist/RobloxStudioMcp.rbxmx
+├── testdata/
+│   └── golden/                      # Golden JSON for the type codec
+├── .github/
+│   └── workflows/
+│       └── ci.yml                   # ubuntu-latest and windows-latest
 ├── docs/
-│   ├── research-feasibility.md      # Initial feasibility study
+│   ├── research-feasibility.md      # Feasibility study and positioning
 │   ├── deep-architecture-map.md     # Engine systems and data type mappings
-│   ├── adversarial-audit.md         # Red team findings and engine barriers
+│   ├── tool-suite-spec.md           # Canonical tool schemas
+│   ├── adversarial-audit.md         # Game scenario walkthroughs and engine barriers
+│   ├── plan-review.md               # Design review behind the current plan
 │   └── go-implementation-plan.md    # This document
 ├── temp/                            # Gitignored local scratchpad
-├── go.mod                           # Go module definition
-├── go.sum                           # Go dependencies checksum
-├── .gitignore                       # Git ignore rules
-└── README.md                        # Project landing page
+├── go.mod
+├── go.sum
+├── .gitignore
+└── README.md
 ```
 
 ---
 
-## 3. Go Dependencies and Engine APIs
+## 3. Go Stack and Engine APIs
 
 ### Go Libraries
-* **MCP Protocol SDK**: `github.com/mark3labs/mcp-go` (mature, feature-complete Go SDK for Model Context Protocol over stdio).
-* **HTTP Server**: Standard library `net/http` (handles REST endpoints and long-polling).
-* **Screen Capture**: `github.com/kbinani/screenshot` or direct Win32 `BitBlt` GDI calls.
-* **Windows System Calls**: `golang.org/x/sys/windows` (used for `FindWindowW`, `SetForegroundWindow`, `SendInput`, `GetClientRect`).
+Go 1.25 or newer.
+* **MCP SDK**: `github.com/modelcontextprotocol/go-sdk` (official; stdio transport, image content).
+* **Windows calls**: `golang.org/x/sys/windows`. It does not wrap `SendInput`, `BitBlt`, `PrintWindow`, `GetClientRect` or `ClientToScreen`, so `host_windows.go` declares them with `windows.NewLazySystemDLL`.
+* **Downscaling**: `golang.org/x/image/draw`.
+* **Everything else**: standard library (`net/http`, `encoding/json`, `text/template`, `embed`).
+
+Not used: `mark3labs/mcp-go`, `kbinani/screenshot`, `robloxapi/rbxfile`.
+
+### Build Commands
+```
+go run ./cmd/buildplugin
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/roblox-studio-mcp.exe ./cmd/roblox-studio-mcp
+```
+The plugin is built first because the main binary embeds it. On macOS, check with `go test ./...` and `GOOS=windows go vet ./...`.
 
 ### Roblox Engine Services (Luau Plugin)
-* `HttpService`: Makes outgoing long-poll requests to `127.0.0.1:58741`.
-* `ScriptEditorService`: Updates open script tabs cleanly without text desync.
-* `ChangeHistoryService`: Wraps edits in Undo/Redo transactions.
-* `CollectionService`: Manages tags (`"KillBrick"`, `"Checkpoint"`).
-* `LogService`: Streams console output and error traces back to the bridge.
+* `HttpService`: outgoing long-poll requests to the bridge.
+* `StudioTestService`: `ExecutePlayModeAsync`, `ExecuteRunModeAsync`, `EndTest`, `GetTestArgs`.
+* `ScriptEditorService`: `UpdateSourceAsync` for script writes.
+* `ChangeHistoryService`: `TryBeginRecording` / `FinishRecording` around every mutation.
+* `CollectionService`: tags.
+* `LogService`: console capture in the edit and server DataModels.
+* `InsertService`: `LoadAsset` for models.
+* `RunService`: role detection (`IsEdit`, `IsRunning`, `IsServer`).
 
 ---
 
-## 4. Architectural Components in Go
+## 4. Architectural Components
 
 ### A. The Local HTTP Bridge (`internal/bridge/`)
-* Listens on `127.0.0.1:58741`.
-* Generates a randomized session token on startup; the Luau plugin requires this token to authenticate.
-* **Endpoints**:
-  * `GET /poll?token=...`: Long-poll connection held open until an MCP tool call arrives or a heartbeat timeout expires (approx. 5 seconds).
-  * `POST /result?token=...`: Luau plugin posts execution results, return values, or error traces back to the waiting Go routine.
-  * `POST /logs?token=...`: Streams console messages captured by `LogService.MessageOut`.
-  * `GET /status`: Health-check endpoint reporting whether Studio is currently connected.
 
-### B. Windows Host Automation (`internal/host/`)
-* **Window Detection (`window.go`)**:
-  * Uses `FindWindowW(nil, "Roblox Studio")` to identify the active window handle.
-  * Checks if Studio is minimized or focused.
-* **Screen Capture (`capture.go`)**:
-  * Obtains the device context (DC) of the Studio client area.
-  * Captures pixels using `BitBlt`, encodes to PNG in memory, and converts to base64.
-  * Exposes the image directly to the MCP client for visual inspection.
-* **Input Injection (`input.go`)**:
-  * Uses Win32 `SendInput` to dispatch:
-    - `VK_F5`: Starts Play Solo.
-    - `Shift + VK_F5`: Stops playtesting and returns to edit mode.
-    - Simulated WASD, Space, and mouse clicks during playtesting verification.
+**Pairing and auth.** Plugins cannot read files or environment variables, so a per-startup secret cannot reach them. Instead:
+1. The binary generates a 6-digit pairing code, printed to stderr and returned by the `studio` tool's `status`.
+2. The user types the code into the plugin widget.
+3. The plugin calls `POST /pair {code}` and receives a long-lived token, stored with `plugin:SetSetting`.
+4. Every later request carries the token in the `X-RSMCP-Token` header, never in the URL.
 
-### C. Luau Companion Plugin (`plugin/src/`)
-* **Polling Loop**: Continuously requests jobs from the Go bridge.
-* **Execution Safety**: Wraps all operations in `pcall`. On error, captures the stack trace and returns a structured failure payload instead of crashing the plugin.
-* **Script Management**: Checks `ScriptEditorService:FindScriptDocument(script)`:
-  - If open: updates via `ScriptEditorService:UpdateSourceAsync`.
-  - If closed: updates `script.Source` directly.
-  - Commits recording with `ChangeHistoryService:FinishRecording`.
-* **Mock DataStore**: Injects an in-memory table-backed mock module into `ReplicatedStorage` if `setup_mock_datastores` is activated, unblocking local game testing.
+The bridge validates the `Host` header (`127.0.0.1:<port>` or `localhost:<port>`), rejects any request carrying an `Origin` header and sends no CORS headers. `GET /status` is the only unauthenticated endpoint and returns no secrets. Token scopes (read, mutate, exec, host) are a later item.
+
+**Multiple clients and Studios.** Each MCP client spawns its own stdio binary.
+* The first binary binds `127.0.0.1:58741` and owns the plugin link.
+* A later binary gets a bind error, confirms the owner through `GET /status` (server id), and forwards its tool calls to the owner over loopback `POST /rpc`.
+* Each Studio window registers a `session_id`. Tools take an optional `session` argument; the default is the most recently active session.
+
+**Endpoints.**
+* `GET /poll`: long-poll held up to 5 s until a job arrives.
+* `POST /result`: job result, return value or error.
+* `POST /logs`: console entries batched every 250 ms or 50 entries.
+* `POST /pair`: exchange a pairing code for a token.
+* `GET /status`: liveness, server id, connection state.
+* `POST /rpc`: owner proxy for later binaries.
+
+**Budget.** `HttpService` allows 500 requests per minute, shared by all calls, so logs are always batched. Plugins trigger a per-domain permission prompt (Plugin Management, HTTP permissions); the plugin surfaces a denial instead of retrying silently. The experience setting "Allow HTTP Requests" governs game scripts and is not assumed to be required for plugins.
+
+**Transport upgrade.** Phase 0 tests `HttpService:CreateWebStreamClient(Enum.WebStreamClientType.WebSocket, options)` (Studio only, at most 4 clients) against the Go bridge. If it works, it replaces long-poll in v1.1.
+
+**Job contract.**
+* Envelope: `{id, seq, role, deadline_ms, tool, args}`.
+* Serial FIFO per session. Default deadline 30 s; `execute_luau` and `playtest` take an explicit `timeout_s`.
+* Mutating jobs run inside `ChangeHistoryService:TryBeginRecording(name)` and `FinishRecording(id, Enum.FinishRecordingOperation.Commit)`, so every mutation is one Undo step.
+* Cancel is best effort at yield points.
+* A plugin disconnect mid-job returns `UNKNOWN`. The bridge never replays a job.
+* Result caps: `max_nodes` default 500, `max_bytes` default 1 MiB, with a continuation `cursor`.
+
+**Instance references.** Every tool that creates something returns `{id, path}`. `id` is `Instance:GetDebugId()`, stable for the session. Any `target` argument accepts an `id`, a dotted path string (`game.Workspace.Map`) or a segment array (`["Workspace","Map","Stage#3"]`, where `#n` picks the n-th same-named sibling, 1-based). A dead reference returns `STALE_REF`.
+
+**Errors and stdout.** Error codes: `NOT_CONNECTED`, `NOT_PAIRED`, `STALE_REF`, `TIMEOUT`, `WRONG_MODE`, `TOO_LARGE`, `COERCION`, `UNSUPPORTED_HOST`, `LUAU_ERROR`, `UNKNOWN`, `NEEDS_MANUAL_SAVE`. They map to MCP `isError` results carrying `{code, message, job_id}`. Stdout is reserved for MCP frames; all logging goes to stderr, or to a file with `--log-file`.
+
+### B. Type Codec (`internal/codec/`)
+Plain JSON numbers, strings and booleans pass through. Every Roblox datatype is a tagged object, for example `{"$t":"Vector3","v":[x,y,z]}`, `{"$t":"Color3","rgb":[0-255,0-255,0-255]}`, `{"$t":"Enum","v":"Material.Neon"}` and `{"$t":"Instance","ref":"<id or path>"}`. CFrame is either 12 numbers or `pos` plus `rot_deg` (degrees, YXZ order). When the target property already holds a value, an untagged array is coerced using `typeof(instance[prop])`. `set_properties` returns `{applied, failed}` and is never silently partial. Reads return the same tagged form. The full type list lives in `tool-suite-spec.md`; golden files in `testdata/golden` pin the encoding.
+
+### C. Host Layer (`internal/host/`)
+The `Host` interface has `FindStudio`, `Capture`, `SendKeys`, `SendMouse` and `SaveShortcut`. `host_other.go` carries `//go:build !windows` and returns `UNSUPPORTED_HOST`, so `go build` and `go test` work on the Mac.
+
+* **Window discovery**: `EnumWindows`, `GetWindowThreadProcessId` and `QueryFullProcessImageName`, matching `RobloxStudioBeta.exe` and the title suffix ` - Roblox Studio` (titles are `<Place> - Roblox Studio`). Several instances are handled.
+* **Capture**: `PrintWindow(PW_RENDERFULLCONTENT)` first, then screen-DC `BitBlt` of the `ClientToScreen` rectangle as fallback. `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` is set at startup. The image is downscaled with `x/image/draw` to a 1568 px long edge and returned as MCP image content.
+* **Input**: `SendInput` with scancodes. The foreground window is checked first; on failure the tool reports `UNSUPPORTED_HOST` or a focus error instead of dropping input.
+* **Save**: Ctrl+S through the host, only when the place already has a file. Otherwise `studio save` returns `NEEDS_MANUAL_SAVE`.
+* **macOS**: a later backend in `host_darwin.go` uses `ebitengine/purego` to stay cgo-free.
+
+The host layer does not control playtests; that runs through `StudioTestService`.
+
+### D. Luau Companion Plugin (`plugin/src/`)
+
+**Roles.** Plugin code loads separately in the edit, server and client DataModels.
+* Edit instance (`RunService:IsEdit()`): the main poll loop and all edit jobs.
+* Server instance (`IsRunning() and IsServer()`): a lightweight poll for `stop` and `server`-context jobs, and forwards play logs.
+* Client instances: inactive.
+* Every poll carries `role` and `session_id`.
+
+**Execution safety.** Every job runs in `pcall`. Failures return a structured payload with the stack trace instead of crashing the plugin.
+
+**Script management.** `manage_script` writes through `ScriptEditorService:UpdateSourceAsync(script, function(old) return new end)` inside a ChangeHistory recording. It works whether the script document is open or not, so there is no open/closed branch.
+
+**Playtest.** `StudioTestService:ExecutePlayModeAsync(args)` and `ExecuteRunModeAsync(args)` start a session from the plugin, yield until it ends, and return the value passed to `EndTest(value)` inside the session. `GetTestArgs()` reads the args there. A second start while a session runs errors with "Previous call to start play session has not been completed", which the plugin catches.
+* **Scripted test** (`playtest run`): the plugin injects a temporary Script into ServerScriptService and starts the session. The script captures `LogService.MessageOut` in the server DataModel, runs the user code and calls `EndTest({ok, value, error, logs, errors, duration_ms, timed_out})`. The plugin removes the script and returns the table.
+* **Interactive session** (`playtest start`): the plugin spawns `ExecutePlayModeAsync` in a task and returns once the server-role instance has reported in. `playtest stop` is delivered to the server-role instance, which calls `EndTest()`.
+
+**Mock DataStore.** `configure_dev_environment` installs `ServerStorage/McpDev/MockDataStoreService` and a wrapper `ServerStorage/McpDev/DataStore`. The wrapper returns the real service outside Studio, or when the attribute `UseRealDataStore` is true, and the mock otherwise. Nothing can shadow `DataStoreService`, so generated game code must `require` the wrapper. The tool returns `{require_path}`.
+
+### E. Plugin Packaging
+`cmd/buildplugin` renders `plugin/src/*.luau` through `text/template` into `plugin/dist/RobloxStudioMcp.rbxmx`: XML with one Script and ModuleScripts whose `Source` is CDATA. `plugin/embed.go` embeds the file with `go:embed`. `roblox-studio-mcp install-plugin` copies it to `%LOCALAPPDATA%\Roblox\Plugins` on Windows or `~/Documents/Roblox/Plugins` on macOS. `plugin/dist` is gitignored.
 
 ---
 
-## 5. Phased Implementation Roadmap
+## 5. Testing
 
-### Phase 1: Go Foundation and Bridge Skeleton
-- Initialize `go.mod` (`roblox-studio-mcp`).
-- Build `internal/bridge` (HTTP server, token auth, job queue, polling loop).
-- Build the basic Luau plugin template that connects, authenticates, and responds to heartbeats.
-- Deliverable: Successful two-way ping between Go binary and Roblox Studio.
+* **Bridge**: a Go fake-plugin client against `httptest` covers pairing, polling, results, the proxy path and error codes.
+* **Tools**: the SDK in-memory transport drives each tool handler.
+* **Codec**: golden JSON files in `testdata/golden`.
+* **Luau deserializer**: a smoke script run through `playtest run` on a fixture place.
+* **CI**: GitHub Actions on `ubuntu-latest` and `windows-latest` running `go test ./...` and `GOOS=windows go vet ./...`. Win32 smoke tests sit behind an `integration` build tag.
 
-### Phase 2: Core Primitives and Type Deserializer
-- Implement `execute_luau`, `create_instance`, `set_properties`, `delete_instance`, `get_instance_tree`, and `call_method`.
-- Build the Luau deserializer for `Vector3`, `CFrame`, `UDim2`, `Color3`, `ColorSequence`, `NumberSequence`, and enums.
-- Integrate `manage_tags` (`CollectionService`) and `manage_attributes`.
-- Deliverable: Full static building, property modification, and low-level escape-hatch primitives from AI prompts.
+---
 
-### Phase 3: High-Level Declarative Builders & Scripting
-- Implement `manage_script` using `ScriptEditorService` and `ChangeHistoryService`.
-- Implement `build_ui_tree` with auto-layout and responsive scale constraints.
-- Implement `create_physics_joint` for generalized mechanical constraints (Prismatic, Hinge, Weld, Spring, AlignPosition).
-- Implement `configure_dev_environment` for offline in-memory MockDataStores.
-- Deliverable: Complete scripting, responsive UI, physics assemblies, and offline development capabilities.
+## 6. Phased Implementation Roadmap
 
-### Phase 4: Windows Host Automation & Testing Loop
-- Implement `internal/host/window.go` and `internal/host/capture.go` (viewport screenshot).
-- Implement `start_playtest` and `stop_playtest` via Win32 `SendInput` (`F5`/`Shift+F5`).
-- Implement `simulate_player_input` for character movement testing.
-- Implement `get_console_logs` via `LogService` listener.
-- Deliverable: Autonomous build, test, and self-debugging loop.
+### Phase 0: Spikes (before any production code)
+* **In Studio**: `ExecutePlayModeAsync` with an injected script and an `EndTest` round trip; `loadstring` output capture; `CreateWebStreamClient(WebSocket)` against a Go server; the HTTP permission prompt on localhost.
+* **On a Windows VM**: `PrintWindow` capture of Studio; whether `SendInput` WASD is honored by the play client.
+* **In Go**: port owner plus `/rpc` proxy; official SDK stdio with image content; the `.rbxmx` builder.
 
-### Phase 5: Verification & Standalone Packaging
-- Test full autonomous generation of an Incremental/Clicker game and an Obby game using the clean two-layer toolset.
-- Package `RobloxStudioMcp.rbxm` plugin file and compile standalone `roblox-studio-mcp.exe`.
-- Deliverable: Verified full game creation capabilities and production release.
+### Phase 1: Bridge, Pairing and Plugin Roles
+- Initialize `go.mod`.
+- Build `internal/bridge`: HTTP server, pairing, token auth, job queue, owner proxy.
+- Build the plugin skeleton with role detection, pairing widget and poll loop.
+- Deliverable: two-way ping between the Go binary and Studio.
+
+### Phase 2: Type Codec and Core Primitives
+- Implement `internal/codec` and the Luau deserializer.
+- Implement `build_tree`, `set_properties`, `get_instance_tree`, `find_instances`, `delete_instance`, `call_method` and `execute_luau` (edit context).
+- Deliverable: static building, property edits and queries from AI prompts.
+
+### Phase 3: Builders, Scripting and Playtest
+- Implement `manage_script`, `create_physics_joint`, `configure_environment`, `modify_terrain`, `insert_asset` and `configure_dev_environment`.
+- Implement `playtest`, `get_console_logs` and `execute_luau` (server context).
+- Deliverable: scripting, physics assemblies, offline DataStore and an autonomous run-and-assert loop.
+
+### Phase 4: Windows Host Layer
+- Implement `internal/host` on Windows.
+- Implement `capture_viewport`, `simulate_player_input` and `studio` `save`.
+- Deliverable: screenshots and OS-level input for smoke checks.
+
+### Phase 5: Verification and Packaging
+- Run end-to-end generation of a clicker game and an obby.
+- Finish `install-plugin`, release builds and CI.
+- Deliverable: a verified release binary with the embedded plugin.

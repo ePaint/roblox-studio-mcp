@@ -1,24 +1,23 @@
-# Red Team Adversarial Audit: Roblox Studio MCP Architecture
+# Adversarial Walkthrough: Roblox Studio MCP Architecture
 
-**Target**: Roblox Studio MCP Architecture and Tool Suite Specification  
-**Auditor**: Red Team Engine Architect  
+**Target**: Roblox Studio MCP architecture and tool suite (`docs/tool-suite-spec.md`)
 **Scope**: Feasibility stress-test against Game Scenario A (Incremental/Clicker) and Game Scenario B (Obby)
 
 ---
 
 ## 1. Executive Verdict
 
-**Verdict**: Conditionally Viable with Significant Architectural Deficits.
+**Verdict**: Viable, provided the barriers below are handled by the design.
 
-The original tool design successfully supported static world-building, but encountered hard engine barriers when entering dynamic gameplay assembly, state management, and the autonomous verification loop.
+A static world-building tool set is not enough for dynamic gameplay assembly, state management and an autonomous verification loop. The corrected design handles each barrier:
 
-Key findings:
-- **Autonomous Playtesting and Viewport Capture cannot run inside Luau alone**: Luau plugins have no access to framebuffer pixels or OS input. `capture_viewport` and `simulate_player_input` must be executed by the Python host process on Windows.
-- **The DataModel splits during Play Solo**: When Studio enters Play Solo, the Edit DataModel separates into Server and Client DataModels. A standard edit-mode plugin loses context unless playtest hooks are used.
-- **Script editing desynchronization**: Writing directly to `Script.Source` desynchronizes open editor tabs unless routed through `ScriptEditorService`, and breaks Undo (`Ctrl+Z`) unless recorded with `ChangeHistoryService`.
-- **The DataStore Trap**: Local unpublished Studio files fail with HTTP 403 Forbidden when calling `DataStoreService`, crashing incremental games on startup unless an in-memory mock is provided.
-- **Physics Trap for Moving Platforms**: Moving an anchored part with `TweenService` causes characters to slip off and fall. Moving platforms require constraints (`PrismaticConstraint`) or client-side interpolation.
-- **Missing Essential Tools**: Tags (`CollectionService`), attributes (`SetAttribute`), interaction classes (`ClickDetector`, `ProximityPrompt`), and spawn management.
+- **Playtest control is a plugin concern.** `StudioTestService:ExecutePlayModeAsync` and `ExecuteRunModeAsync` start a session from the plugin and return the value passed to `EndTest`. No window focus or F5 is involved.
+- **Viewport capture and OS input are host concerns.** Luau has no access to framebuffer pixels or OS input, so `capture_viewport` and `simulate_player_input` run in the Go binary's host layer on Windows. State assertions go through in-engine code in `playtest run` instead of OS input.
+- **Plugin code loads in three DataModels.** The edit, server and client DataModels each run the plugin. Roles keep exactly one active poller per job class.
+- **Script editing desync**: writing `Script.Source` directly desynchronizes open editor tabs and breaks Undo unless the write goes through `ScriptEditorService` inside a `ChangeHistoryService` recording.
+- **The DataStore trap**: DataStore calls in Studio error (the message mentions 403) unless the place is published and "Enable Studio Access to API Services" is on. Games need a mock behind a wrapper module.
+- **Physics trap for moving platforms**: an anchored part moved by a CFrame tween reports zero velocity, so it does not carry characters.
+- **Missing essentials**: tags, attributes, interaction classes (`ClickDetector`, `ProximityPrompt`) and spawn management must be reachable from the tool set.
 
 ---
 
@@ -27,24 +26,24 @@ Key findings:
 ### Step 1: 3D Clickable Object and Floating Feedback
 - **Required**: Golden coin/button in `Workspace` with floating text and click particles.
 - **Engine Barrier**:
-  - Clicking a 3D part requires a `ClickDetector` or `ProximityPrompt`. The original tool list did not provide interaction detectors.
-  - Floating numbers require a `BillboardGui` with `TextLabel` parented to the part, animated locally via `StarterPlayerScripts` to prevent server replication lag.
+  - Clicking a 3D part requires a `ClickDetector` or `ProximityPrompt`, created as nodes in `build_tree`.
+  - Floating numbers require a `BillboardGui` with a `TextLabel` parented to the part, animated locally from `StarterPlayerScripts` to avoid replication lag.
 
 ### Step 2: Data Persistence and Leaderstats
 - **Required**: Persistent currency, multipliers, and leaderstats.
 - **Engine Barrier**:
-  - `DataStoreService:GetDataStore` throws an error in local or unpublished places because "Enable Studio Access to API Services" is off by default.
-  - **Fix**: The toolset must provide an autonomous in-memory mock DataStore (`setup_mock_datastores`) so games run offline without cloud credentials.
+  - `DataStoreService` calls error in Studio unless the place is published and "Enable Studio Access to API Services" is on.
+  - **Fix**: `configure_dev_environment({mock_datastore: true})` installs `ServerStorage/McpDev/MockDataStoreService` and a wrapper `ServerStorage/McpDev/DataStore`. The wrapper returns the real service outside Studio (or when the attribute `UseRealDataStore` is true) and the mock otherwise. Nothing can shadow `DataStoreService`, so generated game code must `require` the wrapper. The tool returns `{require_path}`.
 
 ### Step 3: Upgrade Shop UI (UDim2, ScrollingFrame)
 - **Required**: Responsive shop menu with scrollable cards.
 - **Engine Barrier**:
-  - `ScrollingFrame` clips or hides items unless `AutomaticCanvasSize = Enum.AutomaticSize.Y` is used with `UIListLayout`.
-  - Responsive buttons require `Scale` coordinates and `UIAspectRatioConstraint` rather than fixed pixel offsets.
+  - `ScrollingFrame` clips items unless `AutomaticCanvasSize` is set to `Y` with a `UIListLayout`. `build_tree` exposes this as the `auto_canvas` and `layout` node keys.
+  - Responsive buttons need `Scale` coordinates and a `UIAspectRatioConstraint` (`aspect_ratio`) instead of fixed pixel offsets.
 
 ### Step 4: Server Anti-Cheat and Rebirths
 - **Required**: Server-authoritative validation for clicks and upgrades.
-- **Fix**: Client sends empty `ClickRemote:FireServer()`, server calculates multipliers based on server-stored attributes and enforces rate limits.
+- **Fix**: The client sends an empty `ClickRemote:FireServer()`. The server computes multipliers from server-stored attributes and enforces rate limits. `playtest run` can assert the resulting server state through `EndTest`.
 
 ---
 
@@ -53,20 +52,22 @@ Key findings:
 ### Step 1: 15-20 Progressive Stages
 - **Required**: Generating 20 stages with checkpoints and obstacles.
 - **Engine Barrier**:
-  - Attaching scripts to each part individually causes severe lag.
-  - **Fix**: Use `CollectionService` tags (`"KillBrick"`, `"Checkpoint"`) handled by a single manager in `ServerScriptService`. Requires a `manage_tags` tool.
+  - Attaching scripts to each part causes severe lag.
+  - **Fix**: Use `CollectionService` tags (`"KillBrick"`, `"Checkpoint"`) handled by one manager script in `ServerScriptService`. Tags go in the `tags` key of a `build_tree` node or in `set_properties`.
+  - Twenty sibling `Stage` models make dotted paths ambiguous, so `build_tree` returns `{id, path}` for every node and targets accept ids or segment arrays such as `["Workspace","Map","Stage#3"]`.
 
 ### Step 2: Moving Platforms (Physics Replication Trap)
 - **Required**: Platforms moving back and forth between waypoints.
 - **Engine Barrier**:
-  - Moving anchored parts with `TweenService` does not move the player character. The character stands in place while the floor slides away, dropping the player into the void.
-  - **Fix**: Create unanchored assemblies with `PrismaticConstraint` and `Attachment` pairs, or run client-side delta-CFrame updates. Added dedicated helper: `create_moving_platform`.
+  - An anchored part moved by a CFrame tween has zero velocity as far as the engine is concerned, so the character stands in place while the floor slides away.
+  - **Fix A**: an unanchored platform on a `PrismaticConstraint` with an anchored rail, `ActuatorType` `Servo`, and `SetNetworkOwner(nil)`. `create_physics_joint` takes `joint_type: "Prismatic"` with `axis`, `lower`, `upper`, `speed`, `actuator`, `target`, `anchored_side` and `network_owner_server`, and returns the joint and both attachments.
+  - **Fix B**: an anchored platform that sets `AssemblyLinearVelocity` while it moves.
 
 ### Step 3: Checkpoints and Respawn
 - **Required**: Respawning at the latest completed stage.
 - **Engine Barrier**:
   - Multiple `SpawnLocation` instances cause random team spawns.
-  - Spawning must listen to `Player.CharacterAdded`, wait for `HumanoidRootPart`, and call `character:PivotTo(stageCFrame)`.
+  - Spawning must listen to `Player.CharacterAdded`, wait for `HumanoidRootPart`, and call `character:PivotTo(stageCFrame)`. `playtest run` can verify the respawn position in-engine.
 
 ---
 
@@ -74,43 +75,21 @@ Key findings:
 
 | Barrier | Root Cause in Engine | Solution |
 |---|---|---|
-| Script Editing Desync | Direct `script.Source` edits do not sync if tab is open | Use `ScriptEditorService:UpdateSourceAsync` and `ChangeHistoryService` |
-| Viewport Capture | Luau sandbox cannot access GPU framebuffer | Python host captures window screenshot via Windows OS APIs |
-| Input Simulation | Luau cannot inject native OS inputs | Python host focuses Studio window and injects inputs via OS APIs |
-| Playtest Automation | Luau plugin has no API to trigger Play Solo | Python host sends shortcut (`F5` / `Shift+F5`) to Studio |
-| DataStore 403 Errors | Studio disables API services by default | Inject in-memory MockDataStore module for offline testing |
-| Moving Platforms | Anchored parts moved by Tween do not carry players | Use `PrismaticConstraint` physics assemblies |
-| Tag Management | Repetitive script duplication across parts | Add `manage_tags` tool using `CollectionService` |
-| Instance Attributes | Modern Roblox state stored in attributes | Add `manage_attributes` tool |
+| Script Editing Desync | Direct `script.Source` edits do not sync if a tab is open and bypass Undo | `manage_script` writes with `ScriptEditorService:UpdateSourceAsync` inside a `ChangeHistoryService` recording |
+| Viewport Capture | Luau sandbox cannot read the GPU framebuffer | Host layer in the Go binary captures the Studio window (`PrintWindow`, `BitBlt` fallback), Windows only in v1 |
+| Input Simulation | Luau cannot inject OS input | Host layer `SendInput`, experimental; prefer `Humanoid:MoveTo` and `PivotTo` through `playtest run` |
+| Playtest Automation | Needs a way to start and stop sessions | Plugin calls `StudioTestService:ExecutePlayModeAsync` / `ExecuteRunModeAsync`; `EndTest` returns the result |
+| Play-Mode DataModels | Plugin loads in edit, server and client DataModels | Role model: edit instance runs jobs, server instance handles `stop`, `server`-context jobs and log forwarding, clients stay inactive |
+| DataStore Errors | Studio API access needs a published place and a setting | `configure_dev_environment` mock plus a wrapper module that game code requires |
+| Moving Platforms | Tweened anchored parts have zero velocity and do not carry players | Prismatic joint with anchored rail, Servo and `SetNetworkOwner(nil)`, or `AssemblyLinearVelocity` on an anchored part |
+| Tag and Attribute Management | Repetitive script duplication across parts; modern state lives in attributes | `tags` and `attributes` keys in `build_tree` nodes and `set_properties` |
 
 ---
 
-## 5. Expanded 20-Tool Suite
+## 5. Tool Suite
 
-With these fixes, the tool suite expands from 15 to 20 tools across clear execution boundaries:
+`docs/tool-suite-spec.md` is the canonical specification. The suite has 18 tools in three layers:
 
-### Level 1: Core Primitives (Engine Manipulation)
-1. `create_instance(class_name, parent_path, properties)`
-2. `set_properties(instance_path, properties)`
-3. `get_instance_tree(instance_path, depth)`
-4. `delete_instance(instance_path)`
-5. `execute_luau(code)`
-6. `manage_tags(instance_path, action, tag)` [NEW]
-7. `manage_attributes(instance_path, action, key, value)` [NEW]
-
-### Level 2: Composite Generators (Game Systems)
-8. `build_ui_tree(declarative_json)` (with responsive constraints and AutomaticCanvasSize)
-9. `manage_script(script_path, content, script_type, run_context)` (via ScriptEditorService)
-10. `configure_lighting(preset)`
-11. `generate_terrain(region, material)`
-12. `create_moving_platform(start_pos, end_pos, speed, style)` [NEW]
-13. `setup_mock_datastores(enable)` [NEW]
-
-### Level 3: Verification and Host Automation (Autonomous Testing)
-14. `start_playtest(mode)` [REVISED: Python host triggers F5]
-15. `stop_playtest()` [REVISED: Python host triggers Shift+F5]
-16. `get_console_logs(filter, clear)` (captures logs across Edit and Play sessions)
-17. `capture_viewport()` [REVISED: Python host window screenshot]
-18. `simulate_player_input(action_sequence)` [REVISED: Python host input injection]
-19. `save_place(file_path)` [NEW]
-20. `check_studio_status()` [NEW: Verifies whether Studio is connected and in Edit vs Play mode]
+- **Layer 1, declarative builders (7)**: `build_tree`, `create_physics_joint`, `configure_environment`, `modify_terrain`, `insert_asset`, `manage_script`, `configure_dev_environment`.
+- **Layer 2, primitives (6)**: `execute_luau`, `set_properties`, `get_instance_tree`, `find_instances`, `delete_instance`, `call_method`.
+- **Layer 3, playtest and host (5)**: `playtest`, `get_console_logs`, `capture_viewport`, `simulate_player_input`, `studio`.

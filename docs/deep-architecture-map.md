@@ -40,26 +40,34 @@ DataModel (game)
 
 ---
 
-## 3. Data Types and JSON Serialization Matrix
+## 3. Data Types and Wire Format
 
-Roblox uses custom engine data types. Because MCP transmits data as standard JSON, the bridge must serialize and deserialize these types bi-directionally:
+Roblox datatypes do not map to JSON. Plain JSON numbers, strings and booleans pass through unchanged. Every Roblox datatype is a tagged object with a `$t` field, in both directions: reads return the same tagged form that writes accept.
 
-| Roblox Type | Purpose / Usage | JSON Wire Format | Luau Deserialization |
-|---|---|---|---|
-| `Vector3` | 3D Position, Size, Velocity | `{"x": 10, "y": 5, "z": -20}` | `Vector3.new(x, y, z)` |
-| `Vector2` | 2D Position, Screen coords | `{"x": 1920, "y": 1080}` | `Vector2.new(x, y)` |
-| `CFrame` | Position + 3D Rotation matrix | `{"pos": [0, 5, 0], "rot": [0, 90, 0]}` | `CFrame.new(...) * CFrame.Angles(...)` |
-| `UDim` | 1D GUI dimension (Scale + Offset) | `{"scale": 0.5, "offset": 10}` | `UDim.new(scale, offset)` |
-| `UDim2` | 2D GUI dimension (X & Y UDims) | `{"xs": 0.5, "xo": 0, "ys": 0.2, "yo": 50}` | `UDim2.new(xs, xo, ys, yo)` |
-| `Color3` | RGB colors (0 to 1 or 0 to 255) | `{"r": 255, "g": 128, "b": 0, "rgb": true}` | `Color3.fromRGB(r, g, b)` |
-| `ColorSequence` | Multi-stop color gradients | `[{"t": 0, "c": [255,0,0]}, {"t": 1, "c": [0,0,255]}]` | `ColorSequence.new(keypoints)` |
-| `NumberSequence` | Keyframe curves (transparency/size) | `[{"t": 0, "v": 1}, {"t": 0.5, "v": 0.2}, {"t": 1, "v": 0}]` | `NumberSequence.new(keypoints)` |
-| `NumberRange` | Min/max random variance | `{"min": 5, "max": 15}` | `NumberRange.new(min, max)` |
-| `Font` | Typography, weights, styles | `{"family": "rbxasset://...", "weight": "Bold"}` | `Font.new(family, Enum.FontWeight.Bold)` |
-| `BrickColor` | Legacy preset palette color | `"Bright red"` | `BrickColor.new(name)` |
-| `RaycastParams` | Ray intersection filtering | `{"filter": ["Path"], "type": "Exclude"}` | `RaycastParams.new()` |
+| Roblox Type | Wire format |
+|---|---|
+| `Vector3` | `{"$t":"Vector3","v":[x,y,z]}` |
+| `Vector2` | `{"$t":"Vector2","v":[x,y]}` |
+| `CFrame` | `{"$t":"CFrame","v":[12 numbers]}` or `{"$t":"CFrame","pos":[x,y,z],"rot_deg":[rx,ry,rz]}` |
+| `Color3` | `{"$t":"Color3","rgb":[0-255,0-255,0-255]}` (0-255 only) |
+| `UDim` | `{"$t":"UDim","v":[scale,offset]}` |
+| `UDim2` | `{"$t":"UDim2","v":[xs,xo,ys,yo]}` |
+| `Enum` | `{"$t":"Enum","v":"Material.Neon"}` |
+| `Instance` | `{"$t":"Instance","ref":"<id or path>"}` |
+| `ColorSequence` | `{"$t":"ColorSequence","v":[{"t":0,"rgb":[255,0,0]},{"t":1,"rgb":[0,0,255]}]}` |
+| `NumberSequence` | `{"$t":"NumberSequence","v":[{"t":0,"v":1,"env":0},{"t":1,"v":0,"env":0}]}` |
+| `NumberRange` | `{"$t":"NumberRange","v":[min,max]}` |
+| `Rect` | `{"$t":"Rect","v":[x0,y0,x1,y1]}` |
+| `Font` | `{"$t":"Font","family":"rbxasset://fonts/families/GothamSSm.json","weight":"Bold","style":"Normal"}` |
+| `BrickColor` | `{"$t":"BrickColor","v":"Bright red"}` |
+
+Rules:
+* **CFrame rotation**: `rot_deg` is in degrees, applied in YXZ order, the same convention as the `Orientation` property. The plugin converts to radians because `CFrame.Angles` takes radians.
+* **typeof shorthand**: when the target property already holds a value, an untagged array is coerced using `typeof(instance[prop])`, so `Size: [4,1,2]` works on a `Part`. Tagged values are always accepted.
+* **Per-property results**: `set_properties` returns `{applied:[...], failed:{prop: message}}`. A write is never silently partial; failures carry the `COERCION` code detail per property.
 
 ---
+
 
 ## 4. The UI / GUI System: Photoshop-Level Complexity
 
@@ -97,7 +105,7 @@ Roblox GUI is resolution-independent, multi-layered, and supports advanced layou
 
 ### D. Visual Effects and Styling Elements
 * `UICorner`: Rounds container edges with a given radius (`UDim`).
-* `UIStroke`: Adds borders to frames or outlines to text with border modes (`Border`, `Middle`, `Contextual`).
+* `UIStroke`: Adds borders to frames or outlines to text with `ApplyStrokeMode` set to `Border` or `Contextual`.
 * `UIGradient`: Applies color gradients, rotation angles, and transparency curves across any GUI element.
 
 ---
@@ -121,6 +129,7 @@ Roblox games rely heavily on physical interactions and spatial architecture:
 * `SpringConstraint` and `RopeConstraint`: Elastic and flexible connections.
 * `AlignPosition` and `AlignOrientation`: Modern physics movers that push parts toward target positions/angles with configurable force and responsiveness.
 * `LinearVelocity` and `AngularVelocity`: Applies constant linear or spinning speeds to objects.
+* **Moving platforms**: an anchored part moved by CFrame tween does not carry characters, because the engine sees zero velocity. Use an unanchored platform on a `PrismaticConstraint` with an anchored rail, `ActuatorType` `Servo` and `SetNetworkOwner(nil)`, or keep it anchored and set `AssemblyLinearVelocity` while it moves.
 
 ### C. Collision Management
 * `PhysicsService:RegisterCollisionGroup`: Creates isolated collision channels.
@@ -195,64 +204,73 @@ Full games require clean architectural separation:
 
 ---
 
-## 8. Generalized Two-Layer MCP Tool Suite (22 Tools)
+## 8. MCP Tool Suite: Three Layers, 18 Tools
 
-To avoid overfitting to specific game mechanics while giving LLMs both high-level productivity and raw low-level escape hatches, the tool suite is organized into two core layers plus a host automation layer:
+Declarative builders, raw primitives and a playtest and host layer. Full schemas, argument shapes and return values live in [tool-suite-spec.md](tool-suite-spec.md); this is the index.
 
-### Layer 1: High-Level Declarative Tools (Rapid, Ergonomic, Composable)
-1. `build_ui_tree(root_parent, declarative_tree)`: Builds complete UI hierarchies with auto-layouts, `AutomaticCanvasSize`, `UIAspectRatioConstraint`, and responsive `UDim2` scaling.
-2. `create_physics_joint(joint_type, part_a, part_b, properties)`: Universal physics and mechanical constraint builder (`Prismatic`, `Hinge`, `Weld`, `Spring`, `BallSocket`, `AlignPosition`, `AlignOrientation`). Automatically sets up Attachment pairs and motors.
-3. `configure_environment(lighting_properties, atmosphere, post_effects)`: Configures world lighting technology, atmosphere, sky, shadows, and post-processing in one call.
-4. `modify_terrain(operation, material, cframe, size)`: Procedural voxel terrain generation (blocks, spheres, cylinders, clear regions).
-5. `insert_asset(asset_id, parent_path)`: Loads models, meshes, or packages from the Creator Store via `InsertService`.
-6. `manage_script(path, content, script_type, run_context)`: Safely creates or updates scripts using `ScriptEditorService` and records history with `ChangeHistoryService`.
-7. `configure_dev_environment(options)`: Sets up local dev helpers like in-memory MockDataStores for offline testing, collision groups, and security settings.
+Every tool that creates an object returns `{id, path}`. A `target` argument accepts an `id` (`Instance:GetDebugId()`), a dotted path (`game.Workspace.Map`) or a segment array (`["Workspace","Map","Stage#3"]`, where `#n` picks the n-th same-named sibling, 1-based). A dead reference returns `STALE_REF`.
 
-### Layer 2: Low-Level Primitives (The Escape Hatch & Raw Control)
-8. `execute_luau(code)`: The ultimate escape hatch! Runs arbitrary Luau in Studio edit mode and returns the results. Allows LLMs to invent custom workarounds when high-level tools are insufficient.
-9. `create_instance(class_name, parent_path, properties)`: Spawns literally any engine class (`Part`, `ClickDetector`, `ProximityPrompt`, `ParticleEmitter`, `Sound`, `Highlight`, etc.).
-10. `set_properties(instance_path, properties)`: Updates any combination of properties with automatic JSON-to-Roblox type conversion.
-11. `get_instance_tree(instance_path, depth, include_properties)`: Inspects descendants of any path (e.g., `game.Workspace.Map`).
-12. `delete_instance(instance_path)`: Removes an instance cleanly from the DataModel.
-13. `manage_tags(instance_path, action, tag)`: Directly adds, removes, or queries `CollectionService` tags (for component architectures like kill bricks, checkpoints, interactables).
-14. `manage_attributes(instance_path, action, key, value)`: Directly reads or sets modern instance attributes via `GetAttribute` / `SetAttribute`.
-15. `call_method(instance_path, method_name, args)`: Directly invokes any engine method on an instance (e.g., `PivotTo`, `ApplyImpulse`, `Clone`, `Play`).
+### Layer 1: Declarative builders (7)
+1. `build_tree`: builds an instance tree from nodes `{class, name?, props?, attributes?, tags?, children?}`, with UI sugar keys (`layout`, `padding`, `corner`, `stroke`, `aspect_ratio`, `auto_canvas`). A single node is a valid tree.
+2. `create_physics_joint`: Prismatic, Hinge, Weld, Spring, BallSocket, AlignPosition or AlignOrientation, with Attachment pairs created.
+3. `configure_environment`: lighting, atmosphere, sky and post effects in one call.
+4. `modify_terrain`: `fill_block`, `fill_ball`, `fill_cylinder`, `clear`, `replace`.
+5. `insert_asset`: loads a model by asset id with `InsertService:LoadAsset`; sounds and meshes are set through `SoundId` / `MeshId`.
+6. `manage_script`: `read`, `write` or `delete` scripts through `ScriptEditorService` inside a ChangeHistory recording.
+7. `configure_dev_environment`: mock DataStore wrapper, collision groups, player attributes.
 
-### Layer 3: Host Automation and Verification (Autonomous Quality Control)
-16. `start_playtest(mode)`: Initiates Play Solo (`F5`) or Run mode via Go host automation, linking to the active play DataModel.
-17. `stop_playtest()`: Terminates playtest mode and returns to edit mode (via `Shift+F5`).
-18. `get_console_logs(filter, clear)`: Retrieves filtered output, warning, and error logs with stack traces across edit and play sessions.
-19. `capture_viewport()`: Captures an image of the Roblox Studio window via Go OS-level screen capture, returning base64 image data for multimodal visual verification.
-20. `simulate_player_input(action_sequence)`: Dispatches keyboard and mouse inputs into the focused Studio viewport to test player mechanics.
-21. `save_place(file_path)`: Triggers place file save to preserve progress across test iterations.
-22. `check_studio_status()`: Verifies whether Roblox Studio is open, connected, and whether it is in Edit mode or Play mode.
+### Layer 2: Primitives (6)
+8. `execute_luau`: runs Luau in the `edit` or `server` context with captured output.
+9. `set_properties`: properties, attributes and tags (`add` / `remove`) in one call.
+10. `get_instance_tree`: bounded subtree read with `max_nodes` and a continuation cursor.
+11. `find_instances`: search by class, name pattern, tag or attribute.
+12. `delete_instance`: removes an instance.
+13. `call_method`: invokes an engine method such as `PivotTo`, `ApplyImpulse` or `Clone`.
+
+### Layer 3: Playtest and host (5)
+14. `playtest`: `start`, `stop` or `run` a Play or Run session through `StudioTestService`; `run` returns the `EndTest` payload.
+15. `get_console_logs`: cursor-based log read across edit, server and client sources.
+16. `capture_viewport`: PNG of the Studio window as MCP image content (Windows only in v1).
+17. `simulate_player_input`: key, click, move and wait steps (Windows only, experimental).
+18. `studio`: `status`, `selection` or `save`.
+
+Errors map to MCP `isError` results with `{code, message, job_id}`. Codes: `NOT_CONNECTED`, `NOT_PAIRED`, `STALE_REF`, `TIMEOUT`, `WRONG_MODE`, `TOO_LARGE`, `COERCION`, `UNSUPPORTED_HOST`, `LUAU_ERROR`, `UNKNOWN`, `NEEDS_MANUAL_SAVE`.
 
 ---
 
-## 9. Dependencies and Implementation Blueprint (Go)
+## 9. Dependencies and Implementation Blueprint
 
-### A. Go Environment
-* **Language & Toolchain**: Go 1.23+
-* **Core Libraries**:
-  * `github.com/mark3labs/mcp-go`: Model Context Protocol SDK for Go over stdio.
-  * Standard library `net/http`: Lightweight, high-concurrency local HTTP bridge server on `127.0.0.1:58741`.
-  * `golang.org/x/sys/windows`: Win32 API system calls (`FindWindowW`, `SetForegroundWindow`, `SendInput`).
-  * `github.com/kbinani/screenshot`: Fast OS-level window screen capture for `capture_viewport`.
+### A. Go Stack
+* **Toolchain**: Go 1.25+, `CGO_ENABLED=0`, single static binary.
+* **Dependencies**: `github.com/modelcontextprotocol/go-sdk` (official SDK, stdio transport, image content), `golang.org/x/sys/windows`, `golang.org/x/image/draw`. Everything else is standard library, including `net/http` for the bridge.
+* **Not used**: `mark3labs/mcp-go`, `kbinani/screenshot`, `robloxapi/rbxfile`.
+* **Output discipline**: stdout carries MCP frames only; logs go to stderr or a file with `--log-file`.
 
-### B. Roblox Studio Plugin (`plugin/`)
-* Written in clean, modular Luau.
-* Runs as a local plugin in Studio's `Plugins` directory.
-* Uses `HttpService:RequestAsync` to long-poll the Go server on `127.0.0.1:58741`.
-* Uses `ScriptEditorService` and `ChangeHistoryService` for safe, undoable script operations.
-* Includes a robust Luau property deserializer converting JSON objects into native types (`Vector3`, `CFrame`, `UDim2`, `Color3`, `Enum`, etc.).
-* Implements protected calls (`pcall`) around all operations to return clear error traces to the AI instead of crashing the plugin.
+### B. Host Layer (`internal/host`)
+* `Host` interface: `FindStudio`, `Capture`, `SendKeys`, `SendMouse`, `SaveShortcut`.
+* `host_windows.go` calls user32, gdi32 and dwmapi through `windows.NewLazySystemDLL`, because `x/sys/windows` does not wrap `SendInput`, `BitBlt`, `PrintWindow`, `GetClientRect` or `ClientToScreen`.
+* `host_other.go` (`//go:build !windows`) returns `UNSUPPORTED_HOST`, so `go build` and `go test` work on a Mac.
+* **Window discovery**: `EnumWindows`, `GetWindowThreadProcessId` and `QueryFullProcessImageName` match `RobloxStudioBeta.exe` with a title ending in ` - Roblox Studio`; several instances are handled.
+* **Capture**: `PrintWindow(PW_RENDERFULLCONTENT)` first, screen-DC `BitBlt` of the `ClientToScreen` rect as fallback, `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` at startup, downscale with `x/image/draw`.
+* **Input**: `SendInput` with scancodes after a foreground check; focus failure is reported, never dropped silently.
+* A later macOS backend uses `ebitengine/purego` (cgo-free) in `host_darwin.go`.
+
+### C. Plugin Packaging
+* Source lives in `plugin/src/*.luau`: `init`, `bridge`, `deserializer`, `script_manager`, `mock_datastore`, `physics_builder`, `playtest`.
+* `cmd/buildplugin` (Go, `text/template`) emits `plugin/dist/RobloxStudioMcp.rbxmx`: one Script plus ModuleScripts with CDATA `Source`. `plugin/dist` is gitignored.
+* The main binary embeds the file with `go:embed`. `roblox-studio-mcp install-plugin` copies it to `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or `~/Documents/Roblox/Plugins` (macOS).
+
+### D. Plugin Runtime
+* Polls the bridge over HTTP long-poll (`GET /poll`, `POST /result`, `POST /logs`) and authenticates with a long-lived token obtained through a pairing code (`POST /pair`).
+* Plugin code loads in the edit, server and client DataModels. The edit instance runs the main poll loop; the server instance polls only for `stop` and `server`-context jobs and forwards play logs; client instances stay inactive.
+* Mutating jobs run inside `ChangeHistoryService:TryBeginRecording` / `FinishRecording`, so every change is undoable.
+* The deserializer converts tagged JSON into native types and wraps every operation in `pcall` to return clear errors.
 
 ---
 
 ## 10. Summary
 
-With this detailed blueprint:
-* The complex type system is mapped and solved through typed JSON serialization.
-* The intricate UI system is treated as a first-class declarative system.
-* The full spectrum of engine services (3D, Physics, Lighting, Audio, Scripting) is addressable through structured MCP tools.
-* The autonomous verification loop (Playtest + Console Logs + Viewport Capture) ensures the AI can iterate, fix bugs, and complete full games.
+* The type system is solved with one tagged wire format, per-property results and `STALE_REF`-checked instance references.
+* The UI system is a first-class declarative input to `build_tree`.
+* The engine surface (3D, physics, lighting, audio, scripting) is reachable through 18 tools in three layers.
+* The verification loop is `playtest` (scripted runs return state assertions), `get_console_logs` and `capture_viewport`, with no window focus needed to start or stop a session.
