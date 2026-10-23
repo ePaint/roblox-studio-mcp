@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/png"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -131,54 +132,82 @@ func (h *windowsHost) IsSupported() bool {
 	return true
 }
 
+var (
+	findMu     sync.Mutex
+	findResult WindowInfo
+	findPIDs   map[uint32]bool
+	// NewCallback slots are never freed (~1024 per process), so the enumeration callback is created once.
+	findCallback = syscall.NewCallback(visitStudioWindow)
+)
+
 func (h *windowsHost) FindStudioWindow() (WindowInfo, error) {
-	var found WindowInfo
+	findMu.Lock()
+	defer findMu.Unlock()
 
-	cb := syscall.NewCallback(func(hwnd uintptr, lparam uintptr) uintptr {
-		vis, _, _ := procIsWindowVisible.Call(hwnd)
-		if vis == 0 {
-			return 1 // continue
-		}
+	findResult = WindowInfo{}
+	findPIDs = map[uint32]bool{}
+	procEnumWindows.Call(findCallback, 0)
 
-		buf := make([]uint16, 512)
-		length, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), 512)
-		if length == 0 {
-			return 1
-		}
-		title := syscall.UTF16ToString(buf[:length])
-
-		// Look for Roblox Studio window title
-		if strings.Contains(title, "Roblox Studio") {
-			var pid uint32
-			procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-
-			var r rect
-			procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
-
-			w := int(r.Right - r.Left)
-			ht := int(r.Bottom - r.Top)
-
-			// Pick the main window (skip small popup/splash widgets)
-			if w > 400 && ht > 300 {
-				found = WindowInfo{
-					HWND:   hwnd,
-					Title:  title,
-					PID:    pid,
-					Width:  w,
-					Height: ht,
-				}
-				return 0 // stop enumeration
-			}
-		}
-		return 1 // continue
-	})
-
-	procEnumWindows.Call(cb, 0)
-
-	if found.HWND == 0 {
+	if findResult.HWND == 0 {
 		return WindowInfo{}, ErrStudioNotFound
 	}
-	return found, nil
+	return findResult, nil
+}
+
+func visitStudioWindow(hwnd uintptr, lparam uintptr) uintptr {
+	vis, _, _ := procIsWindowVisible.Call(hwnd)
+	if vis == 0 {
+		return 1
+	}
+
+	var pid uint32
+	procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	isStudio, seen := findPIDs[pid]
+	if !seen {
+		isStudio = isStudioExecutable(processImagePath(pid))
+		findPIDs[pid] = isStudio
+	}
+	if !isStudio {
+		return 1
+	}
+
+	var r rect
+	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+	w := int(r.Right - r.Left)
+	ht := int(r.Bottom - r.Top)
+	if w*ht <= findResult.Width*findResult.Height {
+		return 1
+	}
+
+	findResult = WindowInfo{
+		HWND:   hwnd,
+		Title:  windowTitle(hwnd),
+		PID:    pid,
+		Width:  w,
+		Height: ht,
+	}
+	return 1
+}
+
+func processImagePath(pid uint32) string {
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return ""
+	}
+	defer windows.CloseHandle(handle)
+
+	buf := make([]uint16, windows.MAX_PATH)
+	size := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(handle, 0, &buf[0], &size); err != nil {
+		return ""
+	}
+	return windows.UTF16ToString(buf[:size])
+}
+
+func windowTitle(hwnd uintptr) string {
+	buf := make([]uint16, 512)
+	length, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	return syscall.UTF16ToString(buf[:length])
 }
 
 func (h *windowsHost) CaptureViewport(maxWidth int) ([]byte, error) {
@@ -282,7 +311,12 @@ func (h *windowsHost) SavePlace() error {
 	procSetForegroundWindow.Call(info.HWND)
 	time.Sleep(50 * time.Millisecond)
 
-	// Send Ctrl+S
+	// SendInput types into whichever window has focus, so Ctrl+S must never reach another app.
+	foreground, _, _ := procGetForegroundWindow.Call()
+	if foreground != info.HWND {
+		return ErrCannotFocus
+	}
+
 	inputs := []winInput{
 		{Type: inputKeyboard, Ki: keyboardInput{WVk: vkControl}},
 		{Type: inputKeyboard, Ki: keyboardInput{WVk: vkS}},

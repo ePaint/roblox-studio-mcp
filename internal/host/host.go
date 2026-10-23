@@ -1,6 +1,9 @@
 package host
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // Common errors for host operations.
 var (
@@ -38,3 +41,8 @@ type Host interface {
 
 // DefaultHost returns the platform-specific Host implementation.
 var DefaultHost Host = newPlatformHost()
+
+func isStudioExecutable(path string) bool {
+	base := path[strings.LastIndexAny(path, `\/`)+1:]
+	return strings.EqualFold(base, "RobloxStudioBeta.exe")
+}
