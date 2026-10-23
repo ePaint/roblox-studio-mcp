@@ -8,7 +8,7 @@ import (
 )
 
 func TestServer_Initialization(t *testing.T) {
-	b := bridge.NewServer(0)
+	b := bridge.NewServer("127.0.0.1", 0)
 	h := host.DefaultHost
 
 	srv := NewServer(b, h)

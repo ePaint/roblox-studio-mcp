@@ -11,7 +11,7 @@ import (
 )
 
 func TestServer_SecurityAndPairing(t *testing.T) {
-	srv := NewServer(0)
+	srv := NewServer("127.0.0.1", 0)
 
 	// Test 1: Reject request with Origin header (CSRF defense)
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:58741/status", nil)
@@ -63,5 +63,24 @@ func TestServer_SecurityAndPairing(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&status)
 	if !status.Paired {
 		t.Fatalf("expected status to be paired, got %+v", status)
+	}
+
+	// Test 5: Localhost host rejection when bound to 127.0.0.1
+	req = httptest.NewRequest(http.MethodGet, "http://192.168.1.100:58741/status", nil)
+	w = httptest.NewRecorder()
+	handler = srv.securityMiddleware(http.HandlerFunc(srv.handleStatus))
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for external host on 127.0.0.1 binding, got %d", w.Code)
+	}
+
+	// Test 6: LAN host allowed when bound to 0.0.0.0
+	lanSrv := NewServer("0.0.0.0", 0)
+	lanReq := httptest.NewRequest(http.MethodGet, "http://192.168.1.100:58741/status", nil)
+	lanW := httptest.NewRecorder()
+	lanHandler := lanSrv.securityMiddleware(http.HandlerFunc(lanSrv.handleStatus))
+	lanHandler.ServeHTTP(lanW, lanReq)
+	if lanW.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for external host on 0.0.0.0 binding, got %d", lanW.Code)
 	}
 }

@@ -15,13 +15,30 @@ if not RunService:IsEdit() then
 	return
 end
 
-local BRIDGE_URL = "http://127.0.0.1:58741"
+local DEFAULT_BRIDGE_URL = "http://127.0.0.1:58741"
 local SETTING_TOKEN_KEY = "ROBLOX_STUDIO_MCP_TOKEN"
+local SETTING_URL_KEY = "ROBLOX_STUDIO_MCP_URL"
 local SESSION_ID = HttpService:GenerateGUID(false):sub(1, 8)
 
 local token: string? = plugin:GetSetting(SETTING_TOKEN_KEY)
+local savedUrl: string? = plugin:GetSetting(SETTING_URL_KEY)
+local bridgeUrl = if savedUrl and #savedUrl > 0 then savedUrl else DEFAULT_BRIDGE_URL
 local isPolling = false
 local pendingLogs = {}
+
+local function normalizeUrl(raw: string): string
+	local trimmed = raw:gsub("^%s+", ""):gsub("%s+$", "")
+	if trimmed == "" then
+		return DEFAULT_BRIDGE_URL
+	end
+	if not (trimmed:match("^http://") or trimmed:match("^https://")) then
+		trimmed = "http://" .. trimmed
+	end
+	if trimmed:sub(-1) == "/" then
+		trimmed = trimmed:sub(1, -2)
+	end
+	return trimmed
+end
 
 --------------------------------------------------------------------------------
 -- Type Deserializer & Serializer
@@ -522,7 +539,7 @@ end
 --------------------------------------------------------------------------------
 local toolbar = plugin:CreateToolbar("Roblox MCP")
 local toggleBtn = toolbar:CreateButton("MCP Status", "Configure MCP connection", "rbxassetid://15286419799")
-local widgetInfo = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, false, 300, 180, 250, 150)
+local widgetInfo = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, false, 320, 220, 260, 180)
 local widget = plugin:CreateDockWidgetPluginGui("RobloxStudioMCP_Config", widgetInfo)
 widget.Title = "Roblox Studio MCP Bridge"
 
@@ -532,22 +549,32 @@ mainFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 38)
 mainFrame.Parent = widget
 
 local listLayout = Instance.new("UIListLayout")
-listLayout.Padding = UDim.new(0, 8)
+listLayout.Padding = UDim.new(0, 6)
 listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 listLayout.VerticalAlignment = Enum.VerticalAlignment.Center
 listLayout.Parent = mainFrame
 
 local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(0.9, 0, 0, 30)
+statusLabel.Size = UDim2.new(0.9, 0, 0, 28)
 statusLabel.BackgroundTransparency = 1
 statusLabel.TextColor3 = if token then Color3.fromRGB(80, 220, 100) else Color3.fromRGB(240, 180, 50)
 statusLabel.Text = if token then "Status: Paired" else "Status: Unpaired (Enter Code)"
 statusLabel.Font = Enum.Font.SourceSansBold
-statusLabel.TextSize = 16
+statusLabel.TextSize = 15
 statusLabel.Parent = mainFrame
 
+local urlInput = Instance.new("TextBox")
+urlInput.Size = UDim2.new(0.9, 0, 0, 30)
+urlInput.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
+urlInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+urlInput.PlaceholderText = "Bridge URL (e.g. http://192.168.1.50:58741)"
+urlInput.Text = bridgeUrl
+urlInput.Font = Enum.Font.SourceSans
+urlInput.TextSize = 13
+urlInput.Parent = mainFrame
+
 local codeInput = Instance.new("TextBox")
-codeInput.Size = UDim2.new(0.9, 0, 0, 32)
+codeInput.Size = UDim2.new(0.9, 0, 0, 30)
 codeInput.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
 codeInput.TextColor3 = Color3.fromRGB(255, 255, 255)
 codeInput.PlaceholderText = "Pairing Code (e.g. RBX-1234)"
@@ -559,7 +586,7 @@ local pairBtn = Instance.new("TextButton")
 pairBtn.Size = UDim2.new(0.9, 0, 0, 32)
 pairBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
 pairBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-pairBtn.Text = "Pair with MCP Server"
+pairBtn.Text = "Pair / Connect"
 pairBtn.Font = Enum.Font.SourceSansBold
 pairBtn.TextSize = 14
 pairBtn.Parent = mainFrame
@@ -569,14 +596,47 @@ toggleBtn.Click:Connect(function() widget.Enabled = not widget.Enabled end)
 local startPolling: () -> ()
 
 pairBtn.MouseButton1Click:Connect(function()
+	local newUrl = normalizeUrl(urlInput.Text)
+	bridgeUrl = newUrl
+	plugin:SetSetting(SETTING_URL_KEY, bridgeUrl)
+	urlInput.Text = bridgeUrl
+
 	local code = codeInput.Text:gsub("%s+", "")
-	if #code == 0 then return end
+	if #code == 0 then
+		if token then
+			statusLabel.Text = "Connecting..."
+			task.spawn(function()
+				local success, response = pcall(function()
+					return HttpService:RequestAsync({
+						Url = bridgeUrl .. "/status",
+						Method = "GET",
+						Headers = {
+							["Authorization"] = "Bearer " .. token,
+						},
+					})
+				end)
+				if success and response.Success and response.StatusCode == 200 then
+					statusLabel.Text = "Status: Connected"
+					statusLabel.TextColor3 = Color3.fromRGB(80, 220, 100)
+					startPolling()
+					return
+				end
+				statusLabel.Text = "Connection failed. Enter Pairing Code."
+				statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+			end)
+		else
+			statusLabel.Text = "Enter Pairing Code"
+			statusLabel.TextColor3 = Color3.fromRGB(240, 180, 50)
+		end
+		return
+	end
+
 	statusLabel.Text = "Pairing..."
 
 	task.spawn(function()
 		local success, response = pcall(function()
 			return HttpService:RequestAsync({
-				Url = BRIDGE_URL .. "/pair",
+				Url = bridgeUrl .. "/pair",
 				Method = "POST",
 				Headers = { ["Content-Type"] = "application/json" },
 				Body = HttpService:JSONEncode({ code = code }),
@@ -596,7 +656,7 @@ pairBtn.MouseButton1Click:Connect(function()
 			end
 		end
 
-		statusLabel.Text = "Pairing failed: Invalid code"
+		statusLabel.Text = "Pairing failed: Invalid code or unreachable"
 		statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 	end)
 end)
@@ -623,7 +683,7 @@ task.spawn(function()
 			pendingLogs = {}
 			pcall(function()
 				HttpService:RequestAsync({
-					Url = BRIDGE_URL .. "/logs",
+					Url = bridgeUrl .. "/logs",
 					Method = "POST",
 					Headers = {
 						["Content-Type"] = "application/json",
@@ -644,7 +704,7 @@ startPolling = function()
 		while isPolling and token do
 			local success, response = pcall(function()
 				return HttpService:RequestAsync({
-					Url = BRIDGE_URL .. "/poll",
+					Url = bridgeUrl .. "/poll",
 					Method = "GET",
 					Headers = {
 						["Authorization"] = "Bearer " .. token,
@@ -666,7 +726,7 @@ startPolling = function()
 
 						pcall(function()
 							HttpService:RequestAsync({
-								Url = BRIDGE_URL .. "/result",
+								Url = bridgeUrl .. "/result",
 								Method = "POST",
 								Headers = {
 									["Content-Type"] = "application/json",

@@ -18,6 +18,7 @@ import (
 const version = "0.1.0"
 
 func main() {
+	hostFlag := flag.String("host", "127.0.0.1", "HTTP bridge bind host (use 0.0.0.0 for LAN access)")
 	portFlag := flag.Int("port", bridge.DefaultPort, "Local HTTP bridge port")
 	installFlag := flag.Bool("install-plugin", false, "Install the companion plugin to Roblox Studio's local Plugins directory")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
@@ -33,15 +34,15 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Normal server startup: Start HTTP bridge on 127.0.0.1:<port>
-	bridgeServer := bridge.NewServer(*portFlag)
+	// Normal server startup: Start HTTP bridge on <host>:<port>
+	bridgeServer := bridge.NewServer(*hostFlag, *portFlag)
 	if err := bridgeServer.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "[roblox-studio-mcp] Error starting bridge: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Always write diagnostic logs to stderr (never stdout, which is reserved for MCP JSON-RPC frames)
-	fmt.Fprintf(os.Stderr, "[roblox-studio-mcp] Bridge listening on 127.0.0.1:%d\n", *portFlag)
+	fmt.Fprintf(os.Stderr, "[roblox-studio-mcp] Bridge listening on %s:%d\n", *hostFlag, *portFlag)
 	fmt.Fprintf(os.Stderr, "[roblox-studio-mcp] Pairing Code: %s\n", bridgeServer.PairingCode())
 	fmt.Fprintf(os.Stderr, "[roblox-studio-mcp] Enter this pairing code in Roblox Studio plugin widget to connect.\n")
 

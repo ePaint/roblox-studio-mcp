@@ -21,6 +21,7 @@ plugin/dist/
 .env
 *.local
 .mcp_token
+HANDOFF*.md
 
 # Operating System files
 .DS_Store

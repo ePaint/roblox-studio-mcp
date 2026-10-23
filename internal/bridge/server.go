@@ -25,6 +25,7 @@ const (
 
 type Server struct {
 	addr        string
+	host        string
 	port        int
 	pairingCode string
 	token       string
@@ -70,7 +71,10 @@ func loadExistingToken() string {
 	return ""
 }
 
-func NewServer(port int) *Server {
+func NewServer(host string, port int) *Server {
+	if host == "" {
+		host = "127.0.0.1"
+	}
 	if port <= 0 {
 		port = DefaultPort
 	}
@@ -89,7 +93,8 @@ func NewServer(port int) *Server {
 	}
 
 	return &Server{
-		addr:        fmt.Sprintf("127.0.0.1:%d", port),
+		addr:        fmt.Sprintf("%s:%d", host, port),
+		host:        host,
 		port:        port,
 		pairingCode: code,
 		token:       token,
@@ -114,13 +119,17 @@ func (s *Server) Start() error {
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		// Port conflict check: test if an existing instance is running
-		resp, checkErr := http.Get(fmt.Sprintf("http://127.0.0.1:%d/status", s.port))
+		checkHost := s.host
+		if checkHost == "0.0.0.0" {
+			checkHost = "127.0.0.1"
+		}
+		resp, checkErr := http.Get(fmt.Sprintf("http://%s:%d/status", checkHost, s.port))
 		if checkErr == nil && resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
 			s.isProxy = true
 			return nil // Running in client proxy mode
 		}
-		return fmt.Errorf("failed to bind port %d: %w", s.port, err)
+		return fmt.Errorf("failed to bind port %d on %s: %w", s.port, s.host, err)
 	}
 
 	s.listener = ln
@@ -156,11 +165,13 @@ func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Host header validation
-		host := r.Host
-		if !strings.HasPrefix(host, "127.0.0.1") && !strings.HasPrefix(host, "localhost") {
-			http.Error(w, "Forbidden: invalid host header", http.StatusForbidden)
-			return
+		// Host header validation: restrict to localhost only if host is bound to loopback
+		if s.host == "127.0.0.1" || s.host == "localhost" {
+			host := r.Host
+			if !strings.HasPrefix(host, "127.0.0.1") && !strings.HasPrefix(host, "localhost") {
+				http.Error(w, "Forbidden: invalid host header", http.StatusForbidden)
+				return
+			}
 		}
 
 		next.ServeHTTP(w, r)
