@@ -2,6 +2,7 @@ package host
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -41,6 +42,18 @@ type Host interface {
 
 // DefaultHost returns the platform-specific Host implementation.
 var DefaultHost Host = newPlatformHost()
+
+type windowScan struct {
+	Visible       int
+	StudioOwned   int
+	LookupFailed  int
+	LastLookupErr error
+}
+
+func (s windowScan) notFound() error {
+	return fmt.Errorf("%w: scanned %d visible windows, %d owned by RobloxStudioBeta.exe, %d process lookups failed (last error: %v)",
+		ErrStudioNotFound, s.Visible, s.StudioOwned, s.LookupFailed, s.LastLookupErr)
+}
 
 func isStudioExecutable(path string) bool {
 	base := path[strings.LastIndexAny(path, `\/`)+1:]

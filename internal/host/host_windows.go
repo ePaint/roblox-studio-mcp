@@ -136,6 +136,7 @@ var (
 	findMu     sync.Mutex
 	findResult WindowInfo
 	findPIDs   map[uint32]bool
+	findScan   windowScan
 	// NewCallback slots are never freed (~1024 per process), so the enumeration callback is created once.
 	findCallback = syscall.NewCallback(visitStudioWindow)
 )
@@ -146,10 +147,11 @@ func (h *windowsHost) FindStudioWindow() (WindowInfo, error) {
 
 	findResult = WindowInfo{}
 	findPIDs = map[uint32]bool{}
+	findScan = windowScan{}
 	procEnumWindows.Call(findCallback, 0)
 
 	if findResult.HWND == 0 {
-		return WindowInfo{}, ErrStudioNotFound
+		return WindowInfo{}, findScan.notFound()
 	}
 	return findResult, nil
 }
@@ -159,17 +161,19 @@ func visitStudioWindow(hwnd uintptr, lparam uintptr) uintptr {
 	if vis == 0 {
 		return 1
 	}
+	findScan.Visible++
 
 	var pid uint32
 	procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
 	isStudio, seen := findPIDs[pid]
 	if !seen {
-		isStudio = isStudioExecutable(processImagePath(pid))
+		isStudio = isStudioProcess(pid)
 		findPIDs[pid] = isStudio
 	}
 	if !isStudio {
 		return 1
 	}
+	findScan.StudioOwned++
 
 	var r rect
 	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
@@ -189,19 +193,29 @@ func visitStudioWindow(hwnd uintptr, lparam uintptr) uintptr {
 	return 1
 }
 
-func processImagePath(pid uint32) string {
+func isStudioProcess(pid uint32) bool {
+	path, err := processImagePath(pid)
+	if err != nil {
+		findScan.LookupFailed++
+		findScan.LastLookupErr = err
+		return false
+	}
+	return isStudioExecutable(path)
+}
+
+func processImagePath(pid uint32) (string, error) {
 	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("open pid %d: %w", pid, err)
 	}
 	defer windows.CloseHandle(handle)
 
 	buf := make([]uint16, windows.MAX_PATH)
 	size := uint32(len(buf))
 	if err := windows.QueryFullProcessImageName(handle, 0, &buf[0], &size); err != nil {
-		return ""
+		return "", fmt.Errorf("image name pid %d: %w", pid, err)
 	}
-	return windows.UTF16ToString(buf[:size])
+	return windows.UTF16ToString(buf[:size]), nil
 }
 
 func windowTitle(hwnd uintptr) string {
