@@ -29,7 +29,7 @@ MCP client ──stdio or HTTP──▶ Go server ──HTTP bridge (127.0.0.1:5
 | `-host` | `127.0.0.1` | Bridge bind address |
 | `-port` | `58741` | Bridge port |
 | `-http` | empty | Serve MCP over streamable HTTP on this address instead of stdio, e.g. `0.0.0.0:58742` |
-| `-install-plugin` | | Write the embedded plugin to `%LOCALAPPDATA%\Roblox\Plugins\RobloxStudioMCP.server.luau` and exit |
+| `-install-plugin` | | Write the embedded plugin to `%LOCALAPPDATA%\Roblox\Plugins\` as `RobloxStudioMCP.lua` (the file Studio loads) and `RobloxStudioMCP.server.luau`, then exit |
 | `-version` | | Print version and exit |
 
 **Local (stdio):** the MCP client launches the exe directly. Used when the client runs on the same Windows machine as Studio.
@@ -216,6 +216,6 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o d
 ```
 
 - The binary embeds `plugin/src/init.luau` only. `plugin/src/deserializer.luau` is an older, unused copy of the serializer in `init.luau`.
-- After changing the plugin, rebuild and run `roblox-studio-mcp.exe -install-plugin`, then reload plugins in Studio.
+- After changing the plugin, rebuild and run `roblox-studio-mcp.exe -install-plugin`, then restart Studio. A running exe is locked on Windows, so while the server runs build a second copy (`go build -o dist\plugin-installer.exe ./cmd/roblox-studio-mcp`) and install with that.
 - Win32 code lives in `internal/host/host_windows.go` behind `//go:build windows`. Keep pure logic in `host.go` so it stays testable on macOS.
 - Stdout is reserved for MCP frames in stdio mode. Log to stderr.
