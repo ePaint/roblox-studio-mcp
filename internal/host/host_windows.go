@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,8 @@ var (
 	procClientToScreen            = modUser32.NewProc("ClientToScreen")
 	procSetForegroundWindow       = modUser32.NewProc("SetForegroundWindow")
 	procGetForegroundWindow       = modUser32.NewProc("GetForegroundWindow")
+	procAttachThreadInput         = modUser32.NewProc("AttachThreadInput")
+	procBringWindowToTop          = modUser32.NewProc("BringWindowToTop")
 	procSendInput                 = modUser32.NewProc("SendInput")
 	procGetDC                     = modUser32.NewProc("GetDC")
 	procReleaseDC                 = modUser32.NewProc("ReleaseDC")
@@ -57,6 +60,7 @@ const (
 
 	vkControl = 0x11
 	vkShift   = 0x10
+	vkMenu    = 0x12
 	vkS       = 0x53
 	vkF5      = 0x74
 	vkSpace   = 0x20
@@ -309,18 +313,59 @@ func (h *windowsHost) CaptureViewport(maxWidth int) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// Windows only lets the foreground process move focus, so plain SetForegroundWindow fails while
+// another app is active and the AttachThreadInput and Alt-tap workarounds are needed.
+func focusWindow(hwnd uintptr) bool {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	isFocused := func() bool {
+		time.Sleep(50 * time.Millisecond)
+		foreground, _, _ := procGetForegroundWindow.Call()
+		return foreground == hwnd
+	}
+
+	return focusWithFallbacks(isFocused,
+		func() { procSetForegroundWindow.Call(hwnd) },
+		func() { focusViaAttachedInput(hwnd) },
+		func() { focusViaAltTap(hwnd) },
+	)
+}
+
+func focusViaAttachedInput(hwnd uintptr) {
+	foreground, _, _ := procGetForegroundWindow.Call()
+	foregroundThread, _, _ := procGetWindowThreadProcessId.Call(foreground, 0)
+	ownThread := uintptr(windows.GetCurrentThreadId())
+
+	procAttachThreadInput.Call(ownThread, foregroundThread, 1)
+	defer procAttachThreadInput.Call(ownThread, foregroundThread, 0)
+
+	procBringWindowToTop.Call(hwnd)
+	procSetForegroundWindow.Call(hwnd)
+}
+
+// A synthetic Alt tap makes this process the source of the last input event, which grants focus rights.
+func focusViaAltTap(hwnd uintptr) {
+	inputs := []winInput{
+		{Type: inputKeyboard, Ki: keyboardInput{WVk: vkMenu}},
+		{Type: inputKeyboard, Ki: keyboardInput{WVk: vkMenu, DwFlags: keyeventfKeyup}},
+	}
+	procSendInput.Call(
+		uintptr(len(inputs)),
+		uintptr(unsafe.Pointer(&inputs[0])),
+		uintptr(unsafe.Sizeof(inputs[0])),
+	)
+	procSetForegroundWindow.Call(hwnd)
+}
+
 func (h *windowsHost) SavePlace() error {
 	info, err := h.FindStudioWindow()
 	if err != nil {
 		return err
 	}
 
-	procSetForegroundWindow.Call(info.HWND)
-	time.Sleep(50 * time.Millisecond)
-
 	// SendInput types into whichever window has focus, so Ctrl+S must never reach another app.
-	foreground, _, _ := procGetForegroundWindow.Call()
-	if foreground != info.HWND {
+	if !focusWindow(info.HWND) {
 		return ErrCannotFocus
 	}
 
@@ -346,8 +391,9 @@ func (h *windowsHost) SimulateInput(steps []InputStep) (int, error) {
 		return 0, err
 	}
 
-	procSetForegroundWindow.Call(info.HWND)
-	time.Sleep(50 * time.Millisecond)
+	if !focusWindow(info.HWND) {
+		return 0, ErrCannotFocus
+	}
 
 	completed := 0
 	for _, step := range steps {

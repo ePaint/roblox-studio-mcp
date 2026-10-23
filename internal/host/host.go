@@ -57,6 +57,16 @@ func (s windowScan) notFound() error {
 		ErrStudioNotFound, s.Session, s.Total, s.Visible, s.StudioOwned, s.LookupFailed, s.LastLookupErr)
 }
 
+func focusWithFallbacks(isFocused func() bool, attempts ...func()) bool {
+	for _, attempt := range attempts {
+		if isFocused() {
+			return true
+		}
+		attempt()
+	}
+	return isFocused()
+}
+
 func isStudioExecutable(path string) bool {
 	base := path[strings.LastIndexAny(path, `\/`)+1:]
 	return strings.EqualFold(base, "RobloxStudioBeta.exe")

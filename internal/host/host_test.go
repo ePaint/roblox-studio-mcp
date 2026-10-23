@@ -6,6 +6,46 @@ import (
 	"testing"
 )
 
+func TestFocusWithFallbacks_SkipsAttemptsWhenAlreadyFocused(t *testing.T) {
+	ran := 0
+	attempt := func() { ran++ }
+
+	ok := focusWithFallbacks(func() bool { return true }, attempt, attempt)
+
+	if !ok || ran != 0 {
+		t.Fatalf("expected focused with no attempts, got ok=%v ran=%d", ok, ran)
+	}
+}
+
+func TestFocusWithFallbacks_StopsAtFirstSuccessfulAttempt(t *testing.T) {
+	focused := false
+	var ran []string
+
+	ok := focusWithFallbacks(func() bool { return focused },
+		func() { ran = append(ran, "plain") },
+		func() { ran = append(ran, "attach"); focused = true },
+		func() { ran = append(ran, "alt") },
+	)
+
+	if !ok {
+		t.Fatal("expected focus to succeed")
+	}
+	if strings.Join(ran, ",") != "plain,attach" {
+		t.Fatalf("unexpected attempts: %v", ran)
+	}
+}
+
+func TestFocusWithFallbacks_FailsWhenEveryAttemptFails(t *testing.T) {
+	ran := 0
+	attempt := func() { ran++ }
+
+	ok := focusWithFallbacks(func() bool { return false }, attempt, attempt, attempt)
+
+	if ok || ran != 3 {
+		t.Fatalf("expected failure after 3 attempts, got ok=%v ran=%d", ok, ran)
+	}
+}
+
 func TestWindowScanNotFound_ReportsScanCounts(t *testing.T) {
 	scan := windowScan{Session: 1, Total: 40, Visible: 12, StudioOwned: 0, LookupFailed: 3, LastLookupErr: errors.New("Access is denied.")}
 
