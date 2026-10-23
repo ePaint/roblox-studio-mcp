@@ -20,6 +20,7 @@ const version = "0.1.0"
 func main() {
 	hostFlag := flag.String("host", "127.0.0.1", "HTTP bridge bind host (use 0.0.0.0 for LAN access)")
 	portFlag := flag.Int("port", bridge.DefaultPort, "Local HTTP bridge port")
+	httpFlag := flag.String("http", "", "Serve MCP over streamable HTTP on this address (e.g. 0.0.0.0:58742) instead of stdio")
 	installFlag := flag.Bool("install-plugin", false, "Install the companion plugin to Roblox Studio's local Plugins directory")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
@@ -52,10 +53,25 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := mcpServer.Run(ctx); err != nil && err != context.Canceled {
+	if err := runMCP(ctx, mcpServer, *httpFlag); err != nil && err != context.Canceled {
 		fmt.Fprintf(os.Stderr, "[roblox-studio-mcp] Server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func runMCP(ctx context.Context, mcpServer *mcp.Server, httpAddr string) error {
+	if httpAddr == "" {
+		return mcpServer.Run(ctx)
+	}
+
+	token, err := mcp.LoadOrCreateToken(".mcp_http_token")
+	if err != nil {
+		return fmt.Errorf("loading HTTP token: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "[roblox-studio-mcp] MCP HTTP endpoint: http://%s/\n", httpAddr)
+	fmt.Fprintf(os.Stderr, "[roblox-studio-mcp] MCP HTTP token: %s\n", token)
+	return mcpServer.RunHTTP(ctx, httpAddr, token)
 }
 
 func installPlugin() {
