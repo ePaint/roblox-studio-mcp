@@ -2,10 +2,12 @@ package bridge
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/ePaint/roblox-studio-mcp/internal/types"
 )
@@ -82,5 +84,22 @@ func TestServer_SecurityAndPairing(t *testing.T) {
 	lanHandler.ServeHTTP(lanW, lanReq)
 	if lanW.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK for external host on 0.0.0.0 binding, got %d", lanW.Code)
+	}
+}
+
+func TestDispatchJob_ServerRoleWithoutPlaySessionFailsFast(t *testing.T) {
+	srv := NewServer("127.0.0.1", 0)
+
+	start := time.Now()
+	res, err := srv.DispatchJob(context.Background(), "server", "execute_luau", map[string]any{"code": "return 1"}, 5*time.Second)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.OK || res.Error == nil || res.Error.Code != types.ErrWrongMode {
+		t.Fatalf("expected WRONG_MODE, got %+v", res)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("expected an immediate failure, took %v", time.Since(start))
 	}
 }

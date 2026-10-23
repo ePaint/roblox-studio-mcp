@@ -45,7 +45,7 @@ func (s *Server) Run(ctx context.Context) error {
 // Tool input structs
 type ExecuteLuauInput struct {
 	Code     string  `json:"code" jsonschema:"Luau code string to execute in Roblox Studio"`
-	Context  string  `json:"context,omitempty" jsonschema:"Execution context: edit or server"`
+	Context  string  `json:"context,omitempty" jsonschema:"Execution context: edit (default) or server (the play-test server DataModel, needs a running playtest)"`
 	TimeoutS float64 `json:"timeout_s,omitempty" jsonschema:"Execution timeout in seconds (default 30)"`
 }
 
@@ -73,17 +73,19 @@ type SetPropertiesInput struct {
 type GetInstanceTreeInput struct {
 	Target            any    `json:"target" jsonschema:"Target instance reference"`
 	Depth             int    `json:"depth,omitempty" jsonschema:"Depth of descendants (default 1)"`
-	IncludeProperties any    `json:"include_properties,omitempty" jsonschema:"Boolean true for all properties or array of property names"`
-	MaxNodes          int    `json:"max_nodes,omitempty" jsonschema:"Maximum nodes to return (default 500)"`
-	Cursor            string `json:"cursor,omitempty" jsonschema:"Pagination cursor"`
+	IncludeProperties any    `json:"include_properties,omitempty" jsonschema:"true for every script-readable property, or an array of property names"`
+	MaxNodes          int    `json:"max_nodes,omitempty" jsonschema:"Maximum nodes to return (default 500); when more exist the result carries next_cursor"`
+	Cursor            string `json:"cursor,omitempty" jsonschema:"next_cursor from a previous call, to continue a truncated traversal"`
 }
 
 type FindInstancesInput struct {
-	Root        any    `json:"root,omitempty" jsonschema:"Root instance to search from (default game)"`
-	ClassName   string `json:"class_name,omitempty" jsonschema:"Class name filter (IsA)"`
-	NamePattern string `json:"name_pattern,omitempty" jsonschema:"Lua pattern matched against Name"`
-	Tag         string `json:"tag,omitempty" jsonschema:"CollectionService tag filter"`
-	Limit       int    `json:"limit,omitempty" jsonschema:"Maximum matches to return (default 500)"`
+	Root           any    `json:"root,omitempty" jsonschema:"Root instance to search from (default game)"`
+	ClassName      string `json:"class_name,omitempty" jsonschema:"Class name filter (IsA)"`
+	NamePattern    string `json:"name_pattern,omitempty" jsonschema:"Lua pattern matched against Name"`
+	Tag            string `json:"tag,omitempty" jsonschema:"CollectionService tag filter"`
+	Attribute      string `json:"attribute,omitempty" jsonschema:"Only instances that have this attribute"`
+	AttributeValue any    `json:"attribute_value,omitempty" jsonschema:"With attribute: only instances whose attribute equals this value (wire format)"`
+	Limit          int    `json:"limit,omitempty" jsonschema:"Maximum matches to return (default 500)"`
 }
 
 type CallMethodInput struct {
@@ -105,7 +107,7 @@ type ManageScriptInput struct {
 	Parent     any    `json:"parent,omitempty" jsonschema:"Parent instance when creating a new script"`
 	Content    string `json:"content,omitempty" jsonschema:"Source code for write"`
 	ScriptType string `json:"script_type,omitempty" jsonschema:"Script class type: Script, LocalScript, or ModuleScript"`
-	RunContext string `json:"run_context,omitempty" jsonschema:"RunContext for Script: Server, Client, or Plugin"`
+	RunContext string `json:"run_context,omitempty" jsonschema:"RunContext for Script: Legacy, Server, Client, or Plugin"`
 }
 
 type InsertAssetInput struct {
@@ -117,7 +119,7 @@ type GetConsoleLogsInput struct {
 	SinceSeq int64  `json:"since_seq,omitempty" jsonschema:"Return logs after this sequence number"`
 	Level    string `json:"level,omitempty" jsonschema:"Filter by log level: output, info, warning, error"`
 	Source   string `json:"source,omitempty" jsonschema:"Filter by log source: edit, server, client"`
-	Pattern  string `json:"pattern,omitempty" jsonschema:"Lua pattern or text substring filter"`
+	Pattern  string `json:"pattern,omitempty" jsonschema:"Plain substring filter on the message"`
 	WaitMS   int    `json:"wait_ms,omitempty" jsonschema:"Milliseconds to wait for incoming logs before returning"`
 }
 
@@ -129,20 +131,41 @@ type StudioInput struct {
 	Action string `json:"action" jsonschema:"Studio action to perform: status, selection, save"`
 }
 
+// structuredValue shapes a plugin result for MCP, whose structuredContent must be a JSON object.
+func structuredValue(raw json.RawMessage) any {
+	var val any
+	if len(raw) > 0 {
+		json.Unmarshal(raw, &val)
+	}
+	if obj, isObject := val.(map[string]any); isObject {
+		return obj
+	}
+	return map[string]any{"value": val}
+}
+
+func roleForContext(context string) (string, bool) {
+	switch context {
+	case "", "edit":
+		return "edit", true
+	case "server":
+		return "server", true
+	}
+	return "", false
+}
+
 func (s *Server) registerTools() {
-	dispatch := func(ctx context.Context, tool string, in any, timeout time.Duration) (*mcp.CallToolResult, any, error) {
-		res, err := s.bridge.DispatchJob(ctx, tool, in, timeout)
+	dispatchAs := func(ctx context.Context, role, tool string, in any, timeout time.Duration) (*mcp.CallToolResult, any, error) {
+		res, err := s.bridge.DispatchJob(ctx, role, tool, in, timeout)
 		if err != nil {
 			return nil, nil, err
 		}
 		if !res.OK && res.Error != nil {
 			return &mcp.CallToolResult{IsError: true}, res.Error, nil
 		}
-		var val any
-		if len(res.Value) > 0 {
-			json.Unmarshal(res.Value, &val)
-		}
-		return nil, val, nil
+		return nil, structuredValue(res.Value), nil
+	}
+	dispatch := func(ctx context.Context, tool string, in any, timeout time.Duration) (*mcp.CallToolResult, any, error) {
+		return dispatchAs(ctx, "edit", tool, in, timeout)
 	}
 
 	// 1. execute_luau
@@ -150,11 +173,19 @@ func (s *Server) registerTools() {
 		Name:        "execute_luau",
 		Description: "Executes arbitrary Luau code in Roblox Studio and returns the results.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ExecuteLuauInput) (*mcp.CallToolResult, any, error) {
+		role, ok := roleForContext(in.Context)
+		if !ok {
+			return &mcp.CallToolResult{IsError: true}, &types.ErrorInfo{
+				Code:    types.ErrCoercion,
+				Message: fmt.Sprintf("unsupported context %q: use edit or server", in.Context),
+			}, nil
+		}
+
 		timeout := 30 * time.Second
 		if in.TimeoutS > 0 {
 			timeout = time.Duration(in.TimeoutS * float64(time.Second))
 		}
-		return dispatch(ctx, "execute_luau", in, timeout)
+		return dispatchAs(ctx, role, "execute_luau", in, timeout)
 	})
 
 	// 2. build_tree
@@ -306,6 +337,9 @@ func (s *Server) registerTools() {
 				}, nil
 			}
 			return nil, map[string]any{"ok": true}, nil
+
+		case "selection":
+			return dispatch(ctx, "get_selection", struct{}{}, 15*time.Second)
 
 		default:
 			return &mcp.CallToolResult{IsError: true}, &types.ErrorInfo{
