@@ -9,7 +9,6 @@ import (
 	"image/color"
 	"image/png"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -22,7 +21,7 @@ var (
 	modUser32 = windows.NewLazySystemDLL("user32.dll")
 	modGdi32  = windows.NewLazySystemDLL("gdi32.dll")
 
-	procEnumWindows               = modUser32.NewProc("EnumWindows")
+	procFindWindowExW             = modUser32.NewProc("FindWindowExW")
 	procGetWindowTextW            = modUser32.NewProc("GetWindowTextW")
 	procGetWindowThreadProcessId  = modUser32.NewProc("GetWindowThreadProcessId")
 	procIsWindowVisible           = modUser32.NewProc("IsWindowVisible")
@@ -132,72 +131,67 @@ func (h *windowsHost) IsSupported() bool {
 	return true
 }
 
-var (
-	findMu     sync.Mutex
-	findResult WindowInfo
-	findPIDs   map[uint32]bool
-	findScan   windowScan
-	// NewCallback slots are never freed (~1024 per process), so the enumeration callback is created once.
-	findCallback = syscall.NewCallback(visitStudioWindow)
-)
-
 func (h *windowsHost) FindStudioWindow() (WindowInfo, error) {
-	findMu.Lock()
-	defer findMu.Unlock()
+	var found WindowInfo
+	scan := windowScan{}
+	windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &scan.Session)
+	studioPIDs := map[uint32]bool{}
 
-	findResult = WindowInfo{}
-	findPIDs = map[uint32]bool{}
-	findScan = windowScan{}
-	procEnumWindows.Call(findCallback, 0)
+	for hwnd := nextTopLevelWindow(0); hwnd != 0; hwnd = nextTopLevelWindow(hwnd) {
+		scan.Total++
 
-	if findResult.HWND == 0 {
-		return WindowInfo{}, findScan.notFound()
+		vis, _, _ := procIsWindowVisible.Call(hwnd)
+		if vis == 0 {
+			continue
+		}
+		scan.Visible++
+
+		var pid uint32
+		procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+		isStudio, seen := studioPIDs[pid]
+		if !seen {
+			isStudio = isStudioProcess(pid, &scan)
+			studioPIDs[pid] = isStudio
+		}
+		if !isStudio {
+			continue
+		}
+		scan.StudioOwned++
+
+		var r rect
+		procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+		w := int(r.Right - r.Left)
+		ht := int(r.Bottom - r.Top)
+		if w*ht <= found.Width*found.Height {
+			continue
+		}
+
+		found = WindowInfo{
+			HWND:   hwnd,
+			Title:  windowTitle(hwnd),
+			PID:    pid,
+			Width:  w,
+			Height: ht,
+		}
 	}
-	return findResult, nil
+
+	if found.HWND == 0 {
+		return WindowInfo{}, scan.notFound()
+	}
+	return found, nil
 }
 
-func visitStudioWindow(hwnd uintptr, lparam uintptr) uintptr {
-	vis, _, _ := procIsWindowVisible.Call(hwnd)
-	if vis == 0 {
-		return 1
-	}
-	findScan.Visible++
-
-	var pid uint32
-	procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-	isStudio, seen := findPIDs[pid]
-	if !seen {
-		isStudio = isStudioProcess(pid)
-		findPIDs[pid] = isStudio
-	}
-	if !isStudio {
-		return 1
-	}
-	findScan.StudioOwned++
-
-	var r rect
-	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
-	w := int(r.Right - r.Left)
-	ht := int(r.Bottom - r.Top)
-	if w*ht <= findResult.Width*findResult.Height {
-		return 1
-	}
-
-	findResult = WindowInfo{
-		HWND:   hwnd,
-		Title:  windowTitle(hwnd),
-		PID:    pid,
-		Width:  w,
-		Height: ht,
-	}
-	return 1
+// FindWindowEx replaces an EnumWindows callback that reported zero windows from this process.
+func nextTopLevelWindow(after uintptr) uintptr {
+	hwnd, _, _ := procFindWindowExW.Call(0, after, 0, 0)
+	return hwnd
 }
 
-func isStudioProcess(pid uint32) bool {
+func isStudioProcess(pid uint32, scan *windowScan) bool {
 	path, err := processImagePath(pid)
 	if err != nil {
-		findScan.LookupFailed++
-		findScan.LastLookupErr = err
+		scan.LookupFailed++
+		scan.LastLookupErr = err
 		return false
 	}
 	return isStudioExecutable(path)

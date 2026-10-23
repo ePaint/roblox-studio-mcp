@@ -44,6 +44,8 @@ type Host interface {
 var DefaultHost Host = newPlatformHost()
 
 type windowScan struct {
+	Session       uint32
+	Total         int
 	Visible       int
 	StudioOwned   int
 	LookupFailed  int
@@ -51,8 +53,8 @@ type windowScan struct {
 }
 
 func (s windowScan) notFound() error {
-	return fmt.Errorf("%w: scanned %d visible windows, %d owned by RobloxStudioBeta.exe, %d process lookups failed (last error: %v)",
-		ErrStudioNotFound, s.Visible, s.StudioOwned, s.LookupFailed, s.LastLookupErr)
+	return fmt.Errorf("%w: in session %d scanned %d top-level windows, %d visible, %d owned by RobloxStudioBeta.exe, %d process lookups failed (last error: %v)",
+		ErrStudioNotFound, s.Session, s.Total, s.Visible, s.StudioOwned, s.LookupFailed, s.LastLookupErr)
 }
 
 func isStudioExecutable(path string) bool {

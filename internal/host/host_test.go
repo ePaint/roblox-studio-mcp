@@ -7,14 +7,14 @@ import (
 )
 
 func TestWindowScanNotFound_ReportsScanCounts(t *testing.T) {
-	scan := windowScan{Visible: 12, StudioOwned: 0, LookupFailed: 3, LastLookupErr: errors.New("Access is denied.")}
+	scan := windowScan{Session: 1, Total: 40, Visible: 12, StudioOwned: 0, LookupFailed: 3, LastLookupErr: errors.New("Access is denied.")}
 
 	err := scan.notFound()
 
 	if !errors.Is(err, ErrStudioNotFound) {
 		t.Fatalf("expected ErrStudioNotFound, got %v", err)
 	}
-	for _, want := range []string{"12 visible", "0 owned by RobloxStudioBeta.exe", "3 process lookups failed", "Access is denied."} {
+	for _, want := range []string{"session 1", "40 top-level", "12 visible", "0 owned by RobloxStudioBeta.exe", "3 process lookups failed", "Access is denied."} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err.Error(), want)
 		}
