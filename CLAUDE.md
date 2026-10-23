@@ -74,6 +74,8 @@ Runs arbitrary Luau through `loadstring`.
 
 Returns the first value the chunk returns, serialized to the wire format, so use `return`. Tables are serialized recursively (arrays stay arrays, other keys become strings). `print` output goes to the console logs. Compile and runtime errors return `LUAU_ERROR`, and in Edit the call is rolled back.
 
+A running game refuses `loadstring` unless `ServerScriptService.LoadStringEnabled` is on, so in the playtest server the code is compiled through a temporary ModuleScript. A syntax error there only reports that the module failed to load, and the parser message shows up in `get_console_logs` with source `server`. A playtest can only be stopped from the server: `game:GetService("StudioTestService"):EndTest(<any non-nil value>)` with `context: "server"`.
+
 ### build_tree
 
 Creates a whole hierarchy in one call.

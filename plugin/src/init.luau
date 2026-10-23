@@ -516,13 +516,38 @@ end
 --------------------------------------------------------------------------------
 local handlers: { [string]: (any) -> (boolean, any, any) } = {}
 
+local function compileViaModule(code: string): (boolean, any)
+	local module = Instance.new("ModuleScript")
+	module.Name = "MCP_Exec"
+	module.Source = "return function(...)\n" .. code .. "\nend"
+	local ok, fn = pcall(require, module)
+	module:Destroy()
+	if not ok then
+		return false, "compile error (details in get_console_logs): " .. tostring(fn)
+	end
+	return true, fn
+end
+
+-- A running game refuses loadstring unless LoadStringEnabled is on, so the playtest server
+-- compiles through a throwaway ModuleScript instead.
+local function compileChunk(code: string): (boolean, any)
+	local okLoad, fn, compileErr = pcall(loadstring, code)
+	if okLoad and fn then
+		return true, fn
+	end
+	if okLoad then
+		return false, "compile error: " .. tostring(compileErr)
+	end
+	return compileViaModule(code)
+end
+
 handlers.execute_luau = function(args)
 	if not args.code then
 		return fail("COERCION", "missing 'code' argument")
 	end
-	local fn, compileErr = loadstring(args.code)
-	if not fn then
-		return fail("LUAU_ERROR", "compile error: " .. tostring(compileErr))
+	local okCompile, fn = compileChunk(args.code)
+	if not okCompile then
+		return fail("LUAU_ERROR", fn)
 	end
 	local ok, result = pcall(fn)
 	if not ok then
