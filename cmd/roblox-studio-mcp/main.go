@@ -87,12 +87,17 @@ func installPlugin() {
 		os.Exit(1)
 	}
 
-	targetPath := filepath.Join(pluginDir, "RobloxStudioMCP.server.luau")
-	if err := os.WriteFile(targetPath, []byte(plugin.Source), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing plugin file: %v\n", err)
-		os.Exit(1)
+	paths := []string{
+		filepath.Join(pluginDir, "RobloxStudioMCP.lua"),
+		filepath.Join(pluginDir, "RobloxStudioMCP.server.luau"),
+	}
+	for _, p := range paths {
+		if err := os.WriteFile(p, []byte(plugin.Source), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing plugin file to %s: %v\n", p, err)
+			os.Exit(1)
+		}
 	}
 
-	fmt.Fprintf(os.Stderr, "Success: Companion plugin installed to %s\n", targetPath)
+	fmt.Fprintf(os.Stderr, "Success: Companion plugin installed to %s\n", pluginDir)
 	fmt.Fprintf(os.Stderr, "Restart Roblox Studio or reload plugins to activate.\n")
 }
