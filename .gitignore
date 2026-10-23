@@ -1,6 +1,9 @@
-# Local scratchpad
+# Local scratchpad and maps
 temp/
 tmp/
+maps/
+*.rbxl
+*.rbxlx
 
 # Go build artifacts
 /dist/
