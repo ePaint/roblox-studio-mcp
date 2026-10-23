@@ -71,7 +71,9 @@ func installPlugin() {
 		os.Exit(1)
 	}
 
-	targetPath := filepath.Join(pluginDir, "RobloxStudioMCP.server.luau")
+	targetPath := filepath.Join(pluginDir, "RobloxStudioMCP.lua")
+	// Clean up legacy naming if present
+	_ = os.Remove(filepath.Join(pluginDir, "RobloxStudioMCP.server.luau"))
 	if err := os.WriteFile(targetPath, []byte(plugin.Source), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing plugin file: %v\n", err)
 		os.Exit(1)

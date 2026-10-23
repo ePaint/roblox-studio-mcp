@@ -549,13 +549,16 @@ mainFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 38)
 mainFrame.Parent = widget
 
 local listLayout = Instance.new("UIListLayout")
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 listLayout.Padding = UDim.new(0, 6)
 listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 listLayout.VerticalAlignment = Enum.VerticalAlignment.Center
 listLayout.Parent = mainFrame
 
 local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(0.9, 0, 0, 28)
+statusLabel.Name = "1_StatusLabel"
+statusLabel.LayoutOrder = 1
+statusLabel.Size = UDim2.new(0.9, 0, 0, 26)
 statusLabel.BackgroundTransparency = 1
 statusLabel.TextColor3 = if token then Color3.fromRGB(80, 220, 100) else Color3.fromRGB(240, 180, 50)
 statusLabel.Text = if token then "Status: Paired" else "Status: Unpaired (Enter Code)"
@@ -564,25 +567,34 @@ statusLabel.TextSize = 15
 statusLabel.Parent = mainFrame
 
 local urlInput = Instance.new("TextBox")
+urlInput.Name = "2_UrlInput"
+urlInput.LayoutOrder = 2
 urlInput.Size = UDim2.new(0.9, 0, 0, 30)
 urlInput.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
 urlInput.TextColor3 = Color3.fromRGB(255, 255, 255)
-urlInput.PlaceholderText = "Bridge URL (e.g. http://192.168.1.50:58741)"
+urlInput.PlaceholderText = "Bridge URL (e.g. http://192.168.1.129:58741)"
 urlInput.Text = bridgeUrl
+urlInput.ClearTextOnFocus = false
 urlInput.Font = Enum.Font.SourceSans
 urlInput.TextSize = 13
 urlInput.Parent = mainFrame
 
 local codeInput = Instance.new("TextBox")
+codeInput.Name = "3_CodeInput"
+codeInput.LayoutOrder = 3
 codeInput.Size = UDim2.new(0.9, 0, 0, 30)
 codeInput.BackgroundColor3 = Color3.fromRGB(50, 50, 55)
 codeInput.TextColor3 = Color3.fromRGB(255, 255, 255)
 codeInput.PlaceholderText = "Pairing Code (e.g. RBX-1234)"
+codeInput.Text = ""
+codeInput.ClearTextOnFocus = false
 codeInput.Font = Enum.Font.SourceSans
 codeInput.TextSize = 14
 codeInput.Parent = mainFrame
 
 local pairBtn = Instance.new("TextButton")
+pairBtn.Name = "4_PairButton"
+pairBtn.LayoutOrder = 4
 pairBtn.Size = UDim2.new(0.9, 0, 0, 32)
 pairBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
 pairBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
