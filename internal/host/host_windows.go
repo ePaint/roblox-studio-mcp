@@ -181,7 +181,6 @@ func (h *windowsHost) FindStudioWindow() (WindowInfo, error) {
 	return found, nil
 }
 
-// FindWindowEx replaces an EnumWindows callback that reported zero windows from this process.
 func nextTopLevelWindow(after uintptr) uintptr {
 	hwnd, _, _ := procFindWindowExW.Call(0, after, 0, 0)
 	return hwnd
