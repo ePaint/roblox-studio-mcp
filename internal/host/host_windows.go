@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -21,7 +22,7 @@ var (
 	modUser32 = windows.NewLazySystemDLL("user32.dll")
 	modGdi32  = windows.NewLazySystemDLL("gdi32.dll")
 
-	procEnumWindows               = modUser32.NewProc("EnumWindows")
+	procFindWindowExW             = modUser32.NewProc("FindWindowExW")
 	procGetWindowTextW            = modUser32.NewProc("GetWindowTextW")
 	procGetWindowThreadProcessId  = modUser32.NewProc("GetWindowThreadProcessId")
 	procIsWindowVisible           = modUser32.NewProc("IsWindowVisible")
@@ -29,6 +30,8 @@ var (
 	procClientToScreen            = modUser32.NewProc("ClientToScreen")
 	procSetForegroundWindow       = modUser32.NewProc("SetForegroundWindow")
 	procGetForegroundWindow       = modUser32.NewProc("GetForegroundWindow")
+	procAttachThreadInput         = modUser32.NewProc("AttachThreadInput")
+	procBringWindowToTop          = modUser32.NewProc("BringWindowToTop")
 	procSendInput                 = modUser32.NewProc("SendInput")
 	procGetDC                     = modUser32.NewProc("GetDC")
 	procReleaseDC                 = modUser32.NewProc("ReleaseDC")
@@ -57,6 +60,7 @@ const (
 
 	vkControl = 0x11
 	vkShift   = 0x10
+	vkMenu    = 0x12
 	vkS       = 0x53
 	vkF5      = 0x74
 	vkSpace   = 0x20
@@ -133,52 +137,88 @@ func (h *windowsHost) IsSupported() bool {
 
 func (h *windowsHost) FindStudioWindow() (WindowInfo, error) {
 	var found WindowInfo
+	scan := windowScan{}
+	windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &scan.Session)
+	studioPIDs := map[uint32]bool{}
 
-	cb := syscall.NewCallback(func(hwnd uintptr, lparam uintptr) uintptr {
+	for hwnd := nextTopLevelWindow(0); hwnd != 0; hwnd = nextTopLevelWindow(hwnd) {
+		scan.Total++
+
 		vis, _, _ := procIsWindowVisible.Call(hwnd)
 		if vis == 0 {
-			return 1 // continue
+			continue
+		}
+		scan.Visible++
+
+		var pid uint32
+		procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+		isStudio, seen := studioPIDs[pid]
+		if !seen {
+			isStudio = isStudioProcess(pid, &scan)
+			studioPIDs[pid] = isStudio
+		}
+		if !isStudio {
+			continue
+		}
+		scan.StudioOwned++
+
+		var r rect
+		procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+		w := int(r.Right - r.Left)
+		ht := int(r.Bottom - r.Top)
+		if w*ht <= found.Width*found.Height {
+			continue
 		}
 
-		buf := make([]uint16, 512)
-		length, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), 512)
-		if length == 0 {
-			return 1
+		found = WindowInfo{
+			HWND:   hwnd,
+			Title:  windowTitle(hwnd),
+			PID:    pid,
+			Width:  w,
+			Height: ht,
 		}
-		title := syscall.UTF16ToString(buf[:length])
-
-		// Look for Roblox Studio window title
-		if strings.Contains(title, "Roblox Studio") {
-			var pid uint32
-			procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-
-			var r rect
-			procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
-
-			w := int(r.Right - r.Left)
-			ht := int(r.Bottom - r.Top)
-
-			// Pick the main window (skip small popup/splash widgets)
-			if w > 400 && ht > 300 {
-				found = WindowInfo{
-					HWND:   hwnd,
-					Title:  title,
-					PID:    pid,
-					Width:  w,
-					Height: ht,
-				}
-				return 0 // stop enumeration
-			}
-		}
-		return 1 // continue
-	})
-
-	procEnumWindows.Call(cb, 0)
+	}
 
 	if found.HWND == 0 {
-		return WindowInfo{}, ErrStudioNotFound
+		return WindowInfo{}, scan.notFound()
 	}
 	return found, nil
+}
+
+func nextTopLevelWindow(after uintptr) uintptr {
+	hwnd, _, _ := procFindWindowExW.Call(0, after, 0, 0)
+	return hwnd
+}
+
+func isStudioProcess(pid uint32, scan *windowScan) bool {
+	path, err := processImagePath(pid)
+	if err != nil {
+		scan.LookupFailed++
+		scan.LastLookupErr = err
+		return false
+	}
+	return isStudioExecutable(path)
+}
+
+func processImagePath(pid uint32) (string, error) {
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return "", fmt.Errorf("open pid %d: %w", pid, err)
+	}
+	defer windows.CloseHandle(handle)
+
+	buf := make([]uint16, windows.MAX_PATH)
+	size := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(handle, 0, &buf[0], &size); err != nil {
+		return "", fmt.Errorf("image name pid %d: %w", pid, err)
+	}
+	return windows.UTF16ToString(buf[:size]), nil
+}
+
+func windowTitle(hwnd uintptr) string {
+	buf := make([]uint16, 512)
+	length, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	return syscall.UTF16ToString(buf[:length])
 }
 
 func (h *windowsHost) CaptureViewport(maxWidth int) ([]byte, error) {
@@ -273,16 +313,62 @@ func (h *windowsHost) CaptureViewport(maxWidth int) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// Windows only lets the foreground process move focus, so plain SetForegroundWindow fails while
+// another app is active and the AttachThreadInput and Alt-tap workarounds are needed.
+func focusWindow(hwnd uintptr) bool {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	isFocused := func() bool {
+		time.Sleep(50 * time.Millisecond)
+		foreground, _, _ := procGetForegroundWindow.Call()
+		return foreground == hwnd
+	}
+
+	return focusWithFallbacks(isFocused,
+		func() { procSetForegroundWindow.Call(hwnd) },
+		func() { focusViaAttachedInput(hwnd) },
+		func() { focusViaAltTap(hwnd) },
+	)
+}
+
+func focusViaAttachedInput(hwnd uintptr) {
+	foreground, _, _ := procGetForegroundWindow.Call()
+	foregroundThread, _, _ := procGetWindowThreadProcessId.Call(foreground, 0)
+	ownThread := uintptr(windows.GetCurrentThreadId())
+
+	procAttachThreadInput.Call(ownThread, foregroundThread, 1)
+	defer procAttachThreadInput.Call(ownThread, foregroundThread, 0)
+
+	procBringWindowToTop.Call(hwnd)
+	procSetForegroundWindow.Call(hwnd)
+}
+
+// A synthetic Alt tap makes this process the source of the last input event, which grants focus rights.
+func focusViaAltTap(hwnd uintptr) {
+	inputs := []winInput{
+		{Type: inputKeyboard, Ki: keyboardInput{WVk: vkMenu}},
+		{Type: inputKeyboard, Ki: keyboardInput{WVk: vkMenu, DwFlags: keyeventfKeyup}},
+	}
+	procSendInput.Call(
+		uintptr(len(inputs)),
+		uintptr(unsafe.Pointer(&inputs[0])),
+		uintptr(unsafe.Sizeof(inputs[0])),
+	)
+	procSetForegroundWindow.Call(hwnd)
+}
+
 func (h *windowsHost) SavePlace() error {
 	info, err := h.FindStudioWindow()
 	if err != nil {
 		return err
 	}
 
-	procSetForegroundWindow.Call(info.HWND)
-	time.Sleep(50 * time.Millisecond)
+	// SendInput types into whichever window has focus, so Ctrl+S must never reach another app.
+	if !focusWindow(info.HWND) {
+		return ErrCannotFocus
+	}
 
-	// Send Ctrl+S
 	inputs := []winInput{
 		{Type: inputKeyboard, Ki: keyboardInput{WVk: vkControl}},
 		{Type: inputKeyboard, Ki: keyboardInput{WVk: vkS}},
@@ -305,8 +391,9 @@ func (h *windowsHost) SimulateInput(steps []InputStep) (int, error) {
 		return 0, err
 	}
 
-	procSetForegroundWindow.Call(info.HWND)
-	time.Sleep(50 * time.Millisecond)
+	if !focusWindow(info.HWND) {
+		return 0, ErrCannotFocus
+	}
 
 	completed := 0
 	for _, step := range steps {

@@ -1,6 +1,10 @@
 package host
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 // Common errors for host operations.
 var (
@@ -38,3 +42,32 @@ type Host interface {
 
 // DefaultHost returns the platform-specific Host implementation.
 var DefaultHost Host = newPlatformHost()
+
+type windowScan struct {
+	Session       uint32
+	Total         int
+	Visible       int
+	StudioOwned   int
+	LookupFailed  int
+	LastLookupErr error
+}
+
+func (s windowScan) notFound() error {
+	return fmt.Errorf("%w: in session %d scanned %d top-level windows, %d visible, %d owned by RobloxStudioBeta.exe, %d process lookups failed (last error: %v)",
+		ErrStudioNotFound, s.Session, s.Total, s.Visible, s.StudioOwned, s.LookupFailed, s.LastLookupErr)
+}
+
+func focusWithFallbacks(isFocused func() bool, attempts ...func()) bool {
+	for _, attempt := range attempts {
+		if isFocused() {
+			return true
+		}
+		attempt()
+	}
+	return isFocused()
+}
+
+func isStudioExecutable(path string) bool {
+	base := path[strings.LastIndexAny(path, `\/`)+1:]
+	return strings.EqualFold(base, "RobloxStudioBeta.exe")
+}

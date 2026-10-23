@@ -21,6 +21,7 @@ plugin/dist/
 .env
 *.local
 .mcp_token
+.mcp_http_token
 HANDOFF*.md
 
 # Operating System files

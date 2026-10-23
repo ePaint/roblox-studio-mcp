@@ -251,7 +251,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	// Wait up to 5 seconds for a job
-	job := s.queue.Next(5 * time.Second)
+	job := s.queue.Next(role, 5*time.Second)
 	if job == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -308,6 +308,7 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
+		Role      string          `json:"role"`
 		Tool      string          `json:"tool"`
 		Args      json.RawMessage `json:"args"`
 		TimeoutMS int64           `json:"timeout_ms"`
@@ -322,7 +323,12 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 		timeout = 30 * time.Second
 	}
 
-	res, err := s.DispatchJob(r.Context(), req.Tool, req.Args, timeout)
+	role := req.Role
+	if role == "" {
+		role = "edit"
+	}
+
+	res, err := s.DispatchJob(r.Context(), role, req.Tool, req.Args, timeout)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -380,11 +386,12 @@ func (s *Server) GetStatus() types.StudioStatus {
 	}
 }
 
-func (s *Server) DispatchJob(ctx context.Context, tool string, args any, timeout time.Duration) (*types.JobResult, error) {
+func (s *Server) DispatchJob(ctx context.Context, role, tool string, args any, timeout time.Duration) (*types.JobResult, error) {
 	if s.isProxy {
 		rpcReq := map[string]any{
 			"tool":       tool,
 			"args":       args,
+			"role":       role,
 			"timeout_ms": timeout.Milliseconds(),
 		}
 		rawReq, err := json.Marshal(rpcReq)
@@ -417,6 +424,16 @@ func (s *Server) DispatchJob(ctx context.Context, tool string, args any, timeout
 		return &res, nil
 	}
 
+	if role != "edit" && !s.hasActiveRole(role) {
+		return &types.JobResult{
+			OK: false,
+			Error: &types.ErrorInfo{
+				Code:    types.ErrWrongMode,
+				Message: fmt.Sprintf("no %s DataModel is connected; start a playtest in Studio first", role),
+			},
+		}, nil
+	}
+
 	rawArgs, err := json.Marshal(args)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal job args: %w", err)
@@ -425,7 +442,7 @@ func (s *Server) DispatchJob(ctx context.Context, tool string, args any, timeout
 	jobID := generateID()
 	job := &types.Job{
 		ID:         jobID,
-		Role:       "edit",
+		Role:       role,
 		DeadlineMS: time.Now().Add(timeout).UnixMilli(),
 		Tool:       tool,
 		Args:       rawArgs,
@@ -443,6 +460,19 @@ func (s *Server) DispatchJob(ctx context.Context, tool string, args any, timeout
 	case res := <-resChan:
 		return res, nil
 	}
+}
+
+func (s *Server) hasActiveRole(role string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now()
+	for sid, seen := range s.sessions {
+		if now.Sub(seen) < 15*time.Second && s.roles[sid] == role {
+			return true
+		}
+	}
+	return false
 }
 
 func generateID() string {

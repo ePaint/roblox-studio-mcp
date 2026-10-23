@@ -9,7 +9,9 @@ import (
 
 type JobQueue struct {
 	mu       sync.Mutex
-	pending  chan *types.Job
+	pending  []*types.Job
+	capacity int
+	arrived  chan struct{}
 	results  map[string]chan *types.JobResult
 	seqCount int64
 }
@@ -19,8 +21,9 @@ func NewJobQueue(bufferSize int) *JobQueue {
 		bufferSize = 64
 	}
 	return &JobQueue{
-		pending: make(chan *types.Job, bufferSize),
-		results: make(map[string]chan *types.JobResult),
+		capacity: bufferSize,
+		arrived:  make(chan struct{}),
+		results:  make(map[string]chan *types.JobResult),
 	}
 }
 
@@ -32,13 +35,7 @@ func (q *JobQueue) Enqueue(job *types.Job) <-chan *types.JobResult {
 	job.Seq = q.seqCount
 
 	resChan := make(chan *types.JobResult, 1)
-	q.results[job.ID] = resChan
-
-	// Push to pending queue
-	select {
-	case q.pending <- job:
-	default:
-		// Queue full, drop immediately
+	if len(q.pending) >= q.capacity {
 		resChan <- &types.JobResult{
 			JobID: job.ID,
 			OK:    false,
@@ -47,27 +44,49 @@ func (q *JobQueue) Enqueue(job *types.Job) <-chan *types.JobResult {
 				Message: "bridge job queue is full",
 			},
 		}
+		return resChan
 	}
 
+	q.results[job.ID] = resChan
+	q.pending = append(q.pending, job)
+	close(q.arrived)
+	q.arrived = make(chan struct{})
 	return resChan
 }
 
-func (q *JobQueue) Next(timeout time.Duration) *types.Job {
-	if timeout <= 0 {
-		select {
-		case job := <-q.pending:
+// Next returns the oldest pending job for role, waiting up to timeout for one to arrive.
+func (q *JobQueue) Next(role string, timeout time.Duration) *types.Job {
+	deadline := time.After(timeout)
+	for {
+		q.mu.Lock()
+		job := q.takeLocked(role)
+		arrived := q.arrived
+		q.mu.Unlock()
+
+		if job != nil {
 			return job
-		default:
+		}
+		if timeout <= 0 {
+			return nil
+		}
+
+		select {
+		case <-arrived:
+		case <-deadline:
 			return nil
 		}
 	}
+}
 
-	select {
-	case job := <-q.pending:
+func (q *JobQueue) takeLocked(role string) *types.Job {
+	for i, job := range q.pending {
+		if job.Role != role {
+			continue
+		}
+		q.pending = append(q.pending[:i], q.pending[i+1:]...)
 		return job
-	case <-time.After(timeout):
-		return nil
 	}
+	return nil
 }
 
 func (q *JobQueue) Complete(result *types.JobResult) bool {
@@ -87,6 +106,13 @@ func (q *JobQueue) Complete(result *types.JobResult) bool {
 func (q *JobQueue) Cancel(jobID string, code string, msg string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
+	for i, job := range q.pending {
+		if job.ID == jobID {
+			q.pending = append(q.pending[:i], q.pending[i+1:]...)
+			break
+		}
+	}
 
 	resChan, ok := q.results[jobID]
 	if !ok {
