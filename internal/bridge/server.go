@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -9,6 +10,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +43,33 @@ type Server struct {
 	isProxy    bool
 }
 
+func loadExistingToken() string {
+	if env := os.Getenv("ROBLOX_STUDIO_MCP_TOKEN"); env != "" {
+		return env
+	}
+	if data, err := os.ReadFile(".mcp_token"); err == nil && len(strings.TrimSpace(string(data))) > 0 {
+		return strings.TrimSpace(string(data))
+	}
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData != "" {
+		matches, err := filepath.Glob(filepath.Join(localAppData, "Roblox", "*", "InstalledPlugins", "0", "settings.json"))
+		if err == nil {
+			for _, m := range matches {
+				content, err := os.ReadFile(m)
+				if err == nil {
+					var raw map[string]any
+					if err := json.Unmarshal(content, &raw); err == nil {
+						if tok, ok := raw["ROBLOX_STUDIO_MCP_TOKEN"].(string); ok && tok != "" {
+							return tok
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func NewServer(port int) *Server {
 	if port <= 0 {
 		port = DefaultPort
@@ -50,10 +80,13 @@ func NewServer(port int) *Server {
 	rand.Read(codeBytes)
 	code := fmt.Sprintf("RBX-%04X", (int(codeBytes[0])<<8)|int(codeBytes[1]))
 
-	// Generate 32-byte secret token
-	tokenBytes := make([]byte, 16)
-	rand.Read(tokenBytes)
-	token := hex.EncodeToString(tokenBytes)
+	// Use existing token if found, otherwise generate 32-byte secret token
+	token := loadExistingToken()
+	if token == "" {
+		tokenBytes := make([]byte, 16)
+		rand.Read(tokenBytes)
+		token = hex.EncodeToString(tokenBytes)
+	}
 
 	return &Server{
 		addr:        fmt.Sprintf("127.0.0.1:%d", port),
@@ -98,6 +131,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/result", s.handleResult)
 	mux.HandleFunc("/logs", s.handleLogs)
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/rpc", s.handleRPC)
 
 	s.httpServer = &http.Server{
 		Handler: s.securityMiddleware(mux),
@@ -134,20 +168,22 @@ func (s *Server) securityMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) checkAuth(r *http.Request) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if !s.paired {
-		return false
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") && strings.TrimPrefix(auth, "Bearer ") == s.token {
+	tok := ""
+	if strings.HasPrefix(auth, "Bearer ") {
+		tok = strings.TrimPrefix(auth, "Bearer ")
+	} else if h := r.Header.Get("X-Roblox-Auth"); h != "" {
+		tok = h
+	}
+
+	if tok != "" && tok == s.token {
+		s.paired = true
 		return true
 	}
-	if r.Header.Get("X-Roblox-Auth") == s.token {
-		return true
-	}
+
 	return false
 }
 
@@ -170,6 +206,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 
 	if strings.EqualFold(strings.TrimSpace(req.Code), s.pairingCode) {
 		s.paired = true
+		_ = os.WriteFile(".mcp_token", []byte(s.token), 0600)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"ok":    true,
@@ -253,7 +290,49 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(status)
 }
 
+func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Tool      string          `json:"tool"`
+		Args      json.RawMessage `json:"args"`
+		TimeoutMS int64           `json:"timeout_ms"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	res, err := s.DispatchJob(r.Context(), req.Tool, req.Args, timeout)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
+}
+
 func (s *Server) GetStatus() types.StudioStatus {
+	if s.isProxy {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/status", s.port))
+		if err == nil && resp.StatusCode == http.StatusOK {
+			defer resp.Body.Close()
+			var status types.StudioStatus
+			if err := json.NewDecoder(resp.Body).Decode(&status); err == nil {
+				return status
+			}
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -291,6 +370,42 @@ func (s *Server) GetStatus() types.StudioStatus {
 }
 
 func (s *Server) DispatchJob(ctx context.Context, tool string, args any, timeout time.Duration) (*types.JobResult, error) {
+	if s.isProxy {
+		rpcReq := map[string]any{
+			"tool":       tool,
+			"args":       args,
+			"timeout_ms": timeout.Milliseconds(),
+		}
+		rawReq, err := json.Marshal(rpcReq)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal proxy rpc request: %w", err)
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/rpc", s.port), bytes.NewReader(rawReq))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create proxy rpc request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: timeout + 5*time.Second}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("proxy rpc failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("proxy rpc returned HTTP %d: %s", resp.StatusCode, string(body))
+		}
+
+		var res types.JobResult
+		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+			return nil, fmt.Errorf("failed to decode proxy rpc response: %w", err)
+		}
+		return &res, nil
+	}
+
 	rawArgs, err := json.Marshal(args)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal job args: %w", err)

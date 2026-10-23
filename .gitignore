@@ -20,6 +20,7 @@ plugin/dist/
 # Environment variables and secrets
 .env
 *.local
+.mcp_token
 
 # Operating System files
 .DS_Store
