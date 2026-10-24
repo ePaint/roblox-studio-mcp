@@ -126,6 +126,11 @@
 
 ---
 
+### Session Transcript Part 5 (Cosmetic Rewards, Pride & 100% Completion)
+> "Help players be proud of having finished it or progressed up to a certain point in the game. The final items should be really difficult to get. It should be for kids that really love playing it just for the fun of it, not because there are still numbers to achieve, but just because they want to 100% complete the catalog."
+
+---
+
 ## 7. Creative Vision & Soul of the Game: The Knowledge Chase
 
 ### Emotional Anchor
@@ -144,7 +149,12 @@
   - A space where kids can share what they have learned.
   - Showcasing personal Field Journals or observatory collections to friends.
   - Future trading or cooperative discovery: trading rare spectral star charts, meteor fragments, or lens blueprints with other young astronomers.
+- **Pride, Milestones & Cosmetic Rewards (The 100% Completionist)**:
+  - Rewarding meaningful milestones with in-game astronaut suits, vintage stargazer robes, brass helmets, and Roblox profile badges.
+  - Give players a genuine sense of pride for their dedication and learning.
+  - The pinnacle endgame items (such as the Master Astronomer suit or legendary celestial lens) must be genuinely difficult and rare to earn. They should be reserved for dedicated kids who explore purely for the love of discovery and the ambition to 100% complete the entire astronomical catalog.
 - **A 50-hour experience**: A journey players can lose themselves in for hours, admiring the sky, cataloging the cosmos, and steadily building an observatory of scientific discovery.
+
 
 
 
