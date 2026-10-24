@@ -72,3 +72,33 @@
   - Expand targets beyond stars: Moons (e.g. Moon tutorial with Apollo landing facts), asteroids, comets, planets, pulsars, and black holes to provide educational and discovery value for kids.
 - **Room 3 Deep Space Telescope**:
   - Interacting with the Void Loom currently yields a temporary Frenzy buff. The visual setup leads players to expect a high-tier stationary telescope with enhanced zoom, eliminated sway, or unique deep-space targets.
+
+---
+
+## 5. Astral Shift, Economy Breakdown & Endgame (Part 2 Feedback)
+
+### Bugs
+- **Repeated Astral Shift door animation**: Triggering an Astral Shift a second time (or any time after the first) still plays the door opening animation and cinematic camera pan for the second door, even though it was already opened previously.
+
+### Skill Tree & Prestige Issues
+- **Prestige economy collapsed in one run**: After performing a single Astral Shift with around 13 points, the player was able to instantly purchase almost everything available in the tree (*Shooting Star, Magnetic, Cosmic Transcendence*, etc.). There was no sense of long-term prestige progression.
+- **Unclear skill tree benefits**: Perk descriptions feature fancy names but fail to communicate what they mechanically do. The promised skill tree structure feels ambiguous, and the role of shards or blue points is never explained.
+- **No incentive for further prestige**: Because all upgrades can be bought on the first restart, there is zero reason to ever perform another Astral Shift.
+
+### Currency Hyperinflation & Lack of Sinks
+- **Uncontrolled passive income**: Starlight income snowballs too fast. In 30 seconds without touching the mouse, currency climbed from 80k to 110k, and quickly passed 200k.
+- **Trivialized active gameplay**: Individual star hits reward 13,000 to 25,000 starlight each. With all available upgrades purchased in under 20 minutes, active stargazing loses all purpose.
+- **Flat upgrade design**: Lenses and upgrades only multiply currency income without altering gameplay, giving the player more of a resource that has nowhere to be spent.
+- **Missing currency sinks**: Need meaningful ways to spend late-game starlight, such as observatory repairs, room decorations, aesthetic restoration, or cosmetic customization.
+
+### Core Loop Strengths & Analysis Mechanic Suggestion
+- **Core loop is the fun highlight**: The physical act of raising the spyglass, spotting celestial objects in the sky, and tracking them is engaging and by far the strongest part of the game. It is the primary reason to keep playing.
+- **Analysis progress vs instant hits**: Rather than treating star hunting like instant clicking or "damage", consider giving celestial bodies an Analysis bar. Sustained focus or consecutive hits fill the progress bar until the object is fully cataloged, after which it logs into the journal.
+- **Toggleable HUD overlay**: The informational overlays suggested for the spyglass viewport should have a toggle hotkey (such as Alt) so players can choose between reading space facts and enjoying an unobstructed sky view.
+
+### Content Length & Monetization Direction
+- **Overall game length**: With only three rooms and rapid automation, the entire game can be finished in 10 to 20 minutes.
+- **Visual repetition**: Stars currently share identical shapes with simple color swaps. They need distinct silhouettes, animations, and behaviors (such as comets with trails, rotating asteroids, or glowing planetary rings).
+- **Kid-friendly educational focus**: The primary mission should remain educational, teaching real space science in an accessible, exciting way.
+- **Ethical monetization ideas**: Non-aggressive Robux options could include cosmetic spyglass variants/skins, speedups, or an egg/crate mechanic rewarding collectible spyglasses with minor stat bonuses.
+
