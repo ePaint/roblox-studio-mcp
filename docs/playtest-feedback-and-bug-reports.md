@@ -144,16 +144,28 @@
 ### The Intended Core Loop: "The Knowledge Chase"
 - **Knowledge as progression**: The motivation to play should not be watching numbers tick up, but the curiosity to see what lies further out in space.
 - **Deep observation**: Upgrading telescopes and lenses should allow the player to look deeper, reach new cosmic realms, and unlock genuine facts, history, and scientific details about celestial bodies.
-- **Astronomy Quizzes & Mastery**: Quick, interactive mini-quizzes on celestial bodies once cataloged. Answering correctly boosts observation skill, grants research badges, or unlocks rare lens filters.
-- **Shared Excitement & Community**:
-  - A space where kids can share what they have learned.
-  - Showcasing personal Field Journals or observatory collections to friends.
-  - Future trading or cooperative discovery: trading rare spectral star charts, meteor fragments, or lens blueprints with other young astronomers.
-- **Pride, Milestones & Cosmetic Rewards (The 100% Completionist)**:
-  - Rewarding meaningful milestones with in-game astronaut suits, vintage stargazer robes, brass helmets, and Roblox profile badges.
-  - Give players a genuine sense of pride for their dedication and learning.
-  - The pinnacle endgame items (such as the Master Astronomer suit or legendary celestial lens) must be genuinely difficult and rare to earn. They should be reserved for dedicated kids who explore purely for the love of discovery and the ambition to 100% complete the entire astronomical catalog.
+- **Astronomy Quizzes & Mastery (Optional Polish)**: Quick, interactive mini-quizzes on celestial bodies once cataloged.
 - **A 50-hour experience**: A journey players can lose themselves in for hours, admiring the sky, cataloging the cosmos, and steadily building an observatory of scientific discovery.
+
+---
+
+## 8. Roadmap Scoping: Version 1 vs Future Versions
+
+To prevent feature creep and ensure a solid, polished foundation, development scope is explicitly divided:
+
+### Version 1 Focus (Immediate Scope)
+- **Fix world geometry & visual bugs**: Eliminate rock clipping, floor overlap, model misalignments, and the doorway column.
+- **Core Stargazing & Analysis loop**: Focus optic scope on celestial bodies with an Analysis progress bar that fills to catalog them.
+- **Astronomical Field Journal**: Progressive trivia and scientific facts revealed as objects are observed.
+- **Economy & Pacing normalization**: Stop runaway hyperinflation; ensure active stargazing remains the core progression mechanic.
+- **Clear onboarding**: Add readable signage at doors with required currency and clear objective guidance.
+
+### Deferred to Future Versions (Post-V1 Roadmap)
+- **Cosmetics & Avatar Suits**: In-game astronaut suits, vintage stargazer robes, and brass helmets.
+- **Profile Badges & Achievements**: Official Roblox BadgeService integration and achievement tracking.
+- **Trading & Social Mechanics**: Trading star charts, meteor fragments, or lens blueprints with other players.
+- **Community Sharing**: In-game journal showcases and social spaces for kids to share facts.
+
 
 
 
